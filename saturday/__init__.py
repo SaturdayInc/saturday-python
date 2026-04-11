@@ -9,7 +9,7 @@ Example::
 
     from saturday import Saturday
 
-    client = Saturday(api_key="sat_live_...")
+    client = Saturday(api_key="sk_live_...")
 
     prescription = client.nutrition.calculate(
         activity_type="bike",
@@ -20,7 +20,7 @@ Example::
 
     # Safety metadata is ALWAYS included — athlete safety cannot be paywalled
     print(prescription["safety"]["warnings"])
-    print(f"Carbs: {prescription['carbohydrate']['target_g_per_hr']} g/hr")
+    print(f"Carbs: {prescription['carb_g_per_hr']} g/hr")
 """
 
 from saturday.client import Saturday

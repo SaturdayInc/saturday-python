@@ -18,7 +18,7 @@ pip install saturday
 ```python
 from saturday import Saturday
 
-client = Saturday(api_key="sat_live_...")
+client = Saturday(api_key="sk_live_...")
 
 # Calculate a nutrition prescription
 prescription = client.nutrition.calculate(
@@ -31,9 +31,9 @@ prescription = client.nutrition.calculate(
 
 # Safety metadata is ALWAYS included — athlete safety is never paywalled
 print(prescription["safety"]["warnings"])
-print(f"Carbs: {prescription['carbohydrate']['target_g_per_hr']} g/hr")
-print(f"Sodium: {prescription['sodium']['target_mg_per_hr']} mg/hr")
-print(f"Fluid: {prescription['fluid']['target_ml_per_hr']} mL/hr")
+print(f"Carbs: {prescription['carb_g_per_hr']} g/hr")
+print(f"Sodium: {prescription['sodium_mg_per_hr']} mg/hr")
+print(f"Fluid: {prescription['fluid_ml_per_hr']} mL/hr")
 ```
 
 ## Features
@@ -49,13 +49,13 @@ print(f"Fluid: {prescription['fluid']['target_ml_per_hr']} mL/hr")
 
 ```python
 # API key (server-to-server)
-client = Saturday(api_key="sat_live_...")
+client = Saturday(api_key="sk_live_...")
 
 # OAuth2 Bearer token (athlete-delegated access)
-client = Saturday(api_key="sat_live_...", bearer_token="eyJ...")
+client = Saturday(api_key="sk_live_...", bearer_token="eyJ...")
 
 # Context manager for automatic cleanup
-with Saturday(api_key="sat_live_...") as client:
+with Saturday(api_key="sk_live_...") as client:
     rx = client.nutrition.calculate(activity_type="run", duration_min=60)
 ```
 
@@ -64,7 +64,7 @@ with Saturday(api_key="sat_live_...") as client:
 ```python
 from saturday import Saturday, RateLimitError, ValidationError, NotFoundError
 
-client = Saturday(api_key="sat_live_...")
+client = Saturday(api_key="sk_live_...")
 
 try:
     rx = client.nutrition.calculate(activity_type="swim", duration_min=60)

@@ -26,7 +26,7 @@ class Saturday:
     Saturday Nutrition Intelligence API client.
 
     Args:
-        api_key: Your partner API key (sat_live_... or sat_test_...).
+        api_key: Your partner API key (sk_live_... or sk_test_...).
         base_url: Base URL override. Defaults to https://api.saturday.fit.
         timeout: Request timeout in seconds. Defaults to 30.
         max_retries: Maximum retry attempts for transient failures. Defaults to 3.
@@ -34,7 +34,7 @@ class Saturday:
 
     Example::
 
-        client = Saturday(api_key="sat_live_...")
+        client = Saturday(api_key="sk_live_...")
         rx = client.nutrition.calculate(
             activity_type="run",
             duration_min=90,
@@ -65,7 +65,7 @@ class Saturday:
         if bearer_token:
             headers["Authorization"] = f"Bearer {bearer_token}"
         else:
-            headers["X-API-Key"] = api_key
+            headers["Authorization"] = f"Bearer {api_key}"
 
         self._client = httpx.Client(
             base_url=self._base_url,
