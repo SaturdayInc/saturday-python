@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "saturday"
-version = "0.1.1"
+version = "0.2.0"
 description = "Official Python SDK for the Saturday Nutrition Intelligence API"
 readme = "README.md"
 license = "MIT"

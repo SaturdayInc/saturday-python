@@ -15,7 +15,7 @@ import httpx
 
 from saturday.errors import SaturdayError
 
-SDK_VERSION = "0.1.1"
+SDK_VERSION = "0.2.0"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 3
