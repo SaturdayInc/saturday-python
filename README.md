@@ -80,7 +80,7 @@ except NotFoundError:
 
 | Resource | Description |
 |----------|-------------|
-| `client.nutrition` | Calculate prescriptions, batch, compare |
+| `client.nutrition` | Calculate prescriptions, batch calculate |
 | `client.athletes` | Athlete CRUD, settings, batch create, GDPR export |
 | `client.activities` | Activity CRUD, prescription calculation, feedback |
 | `client.products` | Product search, barcode lookup, curated list |
