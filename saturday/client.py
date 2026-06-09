@@ -15,7 +15,7 @@ import httpx
 
 from saturday.errors import SaturdayError
 
-SDK_VERSION = "0.1.0"
+SDK_VERSION = "0.1.1"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 3
@@ -169,10 +169,6 @@ class _NutritionResource:
         """Batch calculate prescriptions for multiple scenarios (max 50)."""
         return self._client.request("POST", "/v1/nutrition/calculate/batch", json={"scenarios": scenarios})
 
-    def compare(self, scenarios: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Compare prescriptions across different scenarios."""
-        return self._client.request("POST", "/v1/nutrition/calculate/compare", json={"scenarios": scenarios})
-
 
 class _AthletesResource:
     def __init__(self, client: Saturday):
@@ -186,9 +182,15 @@ class _AthletesResource:
         """Get an athlete by ID."""
         return self._client.request("GET", f"/v1/athletes/{athlete_id}")
 
-    def list(self, *, limit: int = 50, offset: int = 0, search: Optional[str] = None) -> Dict[str, Any]:
-        """List athletes for your partner account."""
-        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+    def list(self, *, limit: int = 50, cursor: Optional[str] = None, search: Optional[str] = None) -> Dict[str, Any]:
+        """List athletes for your partner account.
+
+        The response array is under the ``athletes`` key, with ``has_more`` and a
+        ``cursor`` for the next page. Pass that ``cursor`` back here to page forward.
+        """
+        params: Dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
         if search:
             params["search"] = search
         return self._client.request("GET", "/v1/athletes", params=params)
@@ -230,9 +232,16 @@ class _ActivitiesResource:
         """Get an activity by ID."""
         return self._client.request("GET", f"/v1/athletes/{athlete_id}/activities/{activity_id}")
 
-    def list(self, athlete_id: str, *, limit: int = 20, offset: int = 0) -> Dict[str, Any]:
-        """List activities for an athlete."""
-        return self._client.request("GET", f"/v1/athletes/{athlete_id}/activities", params={"limit": limit, "offset": offset})
+    def list(self, athlete_id: str, *, limit: int = 20, cursor: Optional[str] = None) -> Dict[str, Any]:
+        """List activities for an athlete.
+
+        The response array is under the ``activities`` key, with ``has_more`` and a
+        ``cursor`` for the next page. Pass that ``cursor`` back here to page forward.
+        """
+        params: Dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        return self._client.request("GET", f"/v1/athletes/{athlete_id}/activities", params=params)
 
     def update(self, athlete_id: str, activity_id: str, **kwargs: Any) -> Dict[str, Any]:
         """Partially update an activity."""
@@ -244,7 +253,7 @@ class _ActivitiesResource:
 
     def calculate_prescription(self, athlete_id: str, activity_id: str) -> Dict[str, Any]:
         """Calculate/recalculate a nutrition prescription for this activity."""
-        return self._client.request("POST", f"/v1/athletes/{athlete_id}/activities/{activity_id}/prescription")
+        return self._client.request("POST", f"/v1/athletes/{athlete_id}/activities/{activity_id}/calculate")
 
     def get_prescription(self, athlete_id: str, activity_id: str) -> Dict[str, Any]:
         """Get the stored prescription for an activity."""
