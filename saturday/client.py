@@ -15,7 +15,7 @@ import httpx
 
 from saturday.errors import SaturdayError
 
-SDK_VERSION = "0.2.0"
+SDK_VERSION = "0.3.0"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 3
@@ -83,6 +83,7 @@ class Saturday:
         self.organizations = _OrganizationsResource(self)
         self.gear = _GearResource(self)
         self.knowledge = _KnowledgeResource(self)
+        self.coach = _CoachResource(self)
 
     def close(self) -> None:
         """Close the underlying HTTP client."""
@@ -426,3 +427,193 @@ class _KnowledgeResource:
     def get_article(self, article_id: str) -> Dict[str, Any]:
         """Get a knowledge article."""
         return self._client.request("GET", f"/v1/knowledge/articles/{article_id}")
+
+class _CoachResource:
+    """Coach API — ``/v1/coach/*`` (Module 5).
+
+    READS scope to the coach's own roster (every ``athlete_uid`` is roster-confined;
+    a non-roster athlete raises :class:`NotFoundError`). WRITES only ever touch the
+    coach's OWN config — athlete fueling data is read-only via this API. Requires
+    the Pro-Coach+ tier; a lapsed coach's reads/writes return 404.
+
+    Authenticate with a coach API key (``cp_live_``/``cp_test_``, passed as
+    ``api_key``) or an OAuth2 coach-scoped bearer token::
+
+        client = Saturday(api_key="cp_live_...")
+        digest = client.coach.roster_digest(window=7)
+        client.coach.apply_preset(scope="overall", preset="balanced")
+    """
+
+    def __init__(self, client: Saturday):
+        self._client = client
+
+    # --- Reads ---
+
+    def roster(self, *, window: Optional[int] = None) -> Dict[str, Any]:
+        """List the roster with per-athlete needs-attention markers."""
+        params: Dict[str, Any] = {}
+        if window is not None:
+            params["window"] = window
+        return self._client.request("GET", "/v1/coach/roster", params=params or None)
+
+    def roster_digest(self, *, window: Optional[int] = None) -> Dict[str, Any]:
+        """The flagged-only digest: only athletes who crossed a concern bar this window."""
+        params: Dict[str, Any] = {}
+        if window is not None:
+            params["window"] = window
+        return self._client.request("GET", "/v1/coach/roster/digest", params=params or None)
+
+    def fueling_rollup(
+        self, athlete_uid: str, *, window: Optional[int] = None, focus: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """One athlete's in-window fueling rollup + concern summary (roster-confined)."""
+        return self._client.request(
+            "GET",
+            f"/v1/coach/athletes/{athlete_uid}/fueling-rollup",
+            params=_coach_read_params(window, focus),
+        )
+
+    def report(
+        self,
+        athlete_uid: str,
+        *,
+        window: Optional[int] = None,
+        focus: Optional[str] = None,
+        refresh: bool = False,
+    ) -> Dict[str, Any]:
+        """The AI fueling report (narrative + structured). ``refresh=True`` forces regeneration."""
+        params = _coach_read_params(window, focus) or {}
+        if refresh:
+            params["refresh"] = "true"
+        return self._client.request(
+            "GET", f"/v1/coach/athletes/{athlete_uid}/report", params=params or None
+        )
+
+    def report_pdf(
+        self, athlete_uid: str, *, window: Optional[int] = None, focus: Optional[str] = None
+    ) -> bytes:
+        """The report as a downloadable PDF (returns the raw bytes)."""
+        params = _coach_read_params(window, focus) or {}
+        params["format"] = "pdf"
+        # The shared request() returns parsed JSON; for the binary PDF we hit the
+        # underlying httpx client directly so the bytes come back intact.
+        resp = self._client._client.get(
+            f"/v1/coach/athletes/{athlete_uid}/report", params=params
+        )
+        resp.raise_for_status()
+        return resp.content
+
+    def session_detail(self, athlete_uid: str, activity_id: str) -> Dict[str, Any]:
+        """Drill into one session by activity id (planned-vs-actual + markers)."""
+        return self._client.request(
+            "GET", f"/v1/coach/athletes/{athlete_uid}/sessions/{activity_id}"
+        )
+
+    # --- Config: alert rules ---
+
+    def get_notification_rules(
+        self, *, scope: Optional[str] = None, scope_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Read the alert rules set at exactly one scope (not the merged resolution)."""
+        return self._client.request(
+            "GET", "/v1/coach/config/notification-rules", params=_scope_params(scope, scope_id)
+        )
+
+    def set_notification_rules(
+        self, scope: str, rules: Dict[str, Any], *, scope_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Replace the alert rules at a scope (idempotent upsert).
+
+        ``rules`` is the full set:
+        ``{"notification_rules": {"<trigger>": {"enabled", "channels", "cadence",
+        "urgent_threshold"}}, "combinators": [...], "quiet_hours": {...}, "preset"}``.
+        Triggers: under_fuel, symptom, low_rating, hyponatremia_pattern, dial_down,
+        sleep_trend, went_quiet. Channels: in_portal, email, push, webhook (no SMS).
+        """
+        return self._client.request(
+            "PUT",
+            "/v1/coach/config/notification-rules",
+            json={"scope": scope, "scope_id": scope_id, "rules": rules},
+        )
+
+    def apply_preset(self, *, scope: str, preset: str, scope_id: Optional[str] = None) -> Dict[str, Any]:
+        """Apply a named preset (``hands_off`` / ``balanced`` / ``hands_on``) at a scope."""
+        return self._client.request(
+            "POST",
+            "/v1/coach/config/preset",
+            json={"scope": scope, "scope_id": scope_id, "preset": preset},
+        )
+
+    # --- Config: AI report + concern settings ---
+
+    def get_report_settings(
+        self, *, scope: Optional[str] = None, scope_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Read the AI-report + concern-threshold settings at a scope."""
+        return self._client.request(
+            "GET", "/v1/coach/config/report-settings", params=_scope_params(scope, scope_id)
+        )
+
+    def set_report_settings(
+        self, scope: str, settings: Dict[str, Any], *, scope_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Upsert AI-report + concern-threshold settings at a scope (unset fields fall through).
+
+        ``settings`` keys: ``ai_report_window_days`` (7|14|30), ``ai_report_focus``
+        (worst|rolling|key), and the optional concern cutoffs (each a fraction in (0,1]):
+        ``concern_carb_cutoff``, ``concern_sodium_cutoff``, ``concern_fluid_cutoff``,
+        ``hyponatremia_fluid_min``, ``hyponatremia_sodium_max``.
+        """
+        return self._client.request(
+            "PUT",
+            "/v1/coach/config/report-settings",
+            json={"scope": scope, "scope_id": scope_id, "settings": settings},
+        )
+
+    # --- Webhooks ---
+
+    def list_webhooks(self) -> Dict[str, Any]:
+        """List the coach's webhook endpoints (secrets never returned)."""
+        return self._client.request("GET", "/v1/coach/webhooks")
+
+    def register_webhook(self, url: str, *, events: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Register a webhook endpoint. The signing secret is returned ONCE — store it.
+
+        ``events`` subscribes to a subset of ``concern.detected`` /
+        ``athlete.needs_attention``; omit (or pass empty) for all coach events.
+        """
+        return self._client.request(
+            "POST", "/v1/coach/webhooks", json={"url": url, "events": events or []}
+        )
+
+    def delete_webhook(self, webhook_id: str) -> Dict[str, Any]:
+        """Delete a webhook endpoint by id."""
+        return self._client.request("DELETE", f"/v1/coach/webhooks/{webhook_id}")
+
+    def disable_webhook(self, webhook_id: str) -> Dict[str, Any]:
+        """Disable a webhook endpoint (stops delivery without deleting it)."""
+        return self._client.request("POST", f"/v1/coach/webhooks/{webhook_id}/disable")
+
+    def enable_webhook(self, webhook_id: str) -> Dict[str, Any]:
+        """Re-enable a previously disabled webhook endpoint."""
+        return self._client.request("POST", f"/v1/coach/webhooks/{webhook_id}/enable")
+
+
+def _coach_read_params(window: Optional[int], focus: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Build the ?window=&focus= params for a coach per-athlete read."""
+    params: Dict[str, Any] = {}
+    if window is not None:
+        params["window"] = window
+    if focus:
+        params["focus"] = focus
+    return params or None
+
+
+def _scope_params(scope: Optional[str], scope_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Build the ?scope=&scope_id= params for a coach config read."""
+    params: Dict[str, Any] = {}
+    if scope:
+        params["scope"] = scope
+    if scope_id:
+        params["scope_id"] = scope_id
+    return params or None
