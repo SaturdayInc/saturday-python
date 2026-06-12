@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "saturday"
-version = "0.3.0"
+version = "0.4.0"
 description = "Official Python SDK for the Saturday Nutrition Intelligence API"
 readme = "README.md"
 license = "MIT"
@@ -37,6 +37,12 @@ dependencies = [
     "httpx>=0.25.0",
 ]
 
+[project.optional-dependencies]
+# Dev/test extras: `pip install -e .[test]` then `pytest`. Not shipped.
+test = [
+    "pytest>=7.0",
+]
+
 [project.urls]
 Documentation = "https://docs.saturday.fit"
 Repository = "https://github.com/SaturdayInc/saturday-python"
@@ -44,3 +50,6 @@ Issues = "https://github.com/SaturdayInc/saturday-python/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["saturday"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

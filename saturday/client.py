@@ -15,7 +15,7 @@ import httpx
 
 from saturday.errors import SaturdayError
 
-SDK_VERSION = "0.3.0"
+SDK_VERSION = "0.4.0"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 3
@@ -83,6 +83,7 @@ class Saturday:
         self.organizations = _OrganizationsResource(self)
         self.gear = _GearResource(self)
         self.knowledge = _KnowledgeResource(self)
+        self.onboarding = _OnboardingResource(self)
         self.coach = _CoachResource(self)
 
     def close(self) -> None:
@@ -169,6 +170,44 @@ class _NutritionResource:
     def batch_calculate(self, scenarios: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Batch calculate prescriptions for multiple scenarios (max 50)."""
         return self._client.request("POST", "/v1/nutrition/calculate/batch", json={"scenarios": scenarios})
+
+
+class _OnboardingResource:
+    """Athlete onboarding — the headless mechanism for collecting a fueling
+    profile in your own UI (API_OB).
+
+    ``questions()`` returns the versioned question schema (the same definitions
+    the hosted onboarding page renders); render it natively and write answers
+    via ``athletes.update_settings()`` or athlete create/update. Exact numbers
+    require a complete profile — every calculate response's ``precision`` object
+    tells you what is still missing::
+
+        rx = client.nutrition.calculate(activity_type="run", duration_min=90)
+        p = rx["precision"]
+        if not p["profile_complete"]:
+            for f in p["missing_fields"]:        # sorted most-impactful-first
+                print(f["field"], f["band_impact"])
+            invite_url = p["onboarding"]["url"]  # hosted onboarding page
+
+    **Attribution is required** when you render these questions in your UI — the
+    schema response carries the ``attribution`` object, same contract as
+    calculations.
+    """
+
+    def __init__(self, client: Saturday):
+        self._client = client
+
+    def questions(self) -> Dict[str, Any]:
+        """Fetch the versioned onboarding question schema.
+
+        Returns ``{"schema_version", "questions": [...], "attribution": {...}}``.
+        Each question is ``{"field", "type" (single_select | multi_select |
+        year_of_birth | weight), "required", "title_en", "l10n_key"?,
+        "options"? [{"value", "label_en", "l10n_key"?, "pre_checked"?}],
+        "min"?, "max"?}``. Option scales are odd-point (e.g. {1, 5, 9}), not
+        continuous sliders — store the exact values given.
+        """
+        return self._client.request("GET", "/v1/onboarding/questions")
 
 
 class _AthletesResource:
