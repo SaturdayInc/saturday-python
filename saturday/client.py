@@ -305,30 +305,45 @@ class _ActivitiesResource:
 
 
 class _ProductsResource:
+    """Saturday's curated product catalog.
+
+    Every method takes ``athlete_id``: the catalog opens on that athlete's
+    Saturday subscription, not on your partner account. A subscribed athlete (or
+    one inside their 30-day trial) gets ``tier: "full"`` with products; anyone
+    else gets ``tier: "teaser"`` with empty product lists plus the category
+    taxonomy and a subscribe CTA. Both are 200. Branch on ``tier``.
+    """
+
     def __init__(self, client: Saturday):
         self._client = client
 
-    def get_by_barcode(self, barcode: str) -> Dict[str, Any]:
-        """Look up a product by barcode."""
-        return self._client.request("GET", f"/v1/products/{barcode}")
+    def get_by_barcode(self, barcode: str, athlete_id: str) -> Dict[str, Any]:
+        """Look up a curated product by barcode, on behalf of an athlete."""
+        return self._client.request(
+            "GET", f"/v1/products/{barcode}", params={"athlete_id": athlete_id}
+        )
 
-    def search(self, query: str, *, category: Optional[str] = None, limit: int = 20) -> Dict[str, Any]:
-        """Search the product database."""
-        params: Dict[str, Any] = {"q": query, "limit": limit}
-        if category:
-            params["category"] = category
-        return self._client.request("GET", "/v1/products/search", params=params)
+    def search(self, query: str, athlete_id: str) -> Dict[str, Any]:
+        """Search the curated catalog, matched across name, brand, type, and keywords."""
+        return self._client.request(
+            "GET", "/v1/products/search", params={"q": query, "athlete_id": athlete_id}
+        )
 
-    def list_curated(self, *, category: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
-        """List Saturday's curated product database."""
-        params: Dict[str, Any] = {"limit": limit}
-        if category:
-            params["category"] = category
+    def list_curated(self, athlete_id: str, *, cursor: Optional[str] = None) -> Dict[str, Any]:
+        """Page through Saturday's curated catalog (10 per page).
+
+        Pass the ``next_cursor`` from the previous response to advance.
+        """
+        params: Dict[str, Any] = {"athlete_id": athlete_id}
+        if cursor:
+            params["cursor"] = cursor
         return self._client.request("GET", "/v1/products/curated", params=params)
 
-    def list_categories(self) -> Dict[str, Any]:
-        """List product categories."""
-        return self._client.request("GET", "/v1/products/categories")
+    def list_categories(self, athlete_id: str) -> Dict[str, Any]:
+        """List the product taxonomy. Free for every athlete."""
+        return self._client.request(
+            "GET", "/v1/products/categories", params={"athlete_id": athlete_id}
+        )
 
 
 class _AIResource:
