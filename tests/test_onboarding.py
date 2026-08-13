@@ -76,10 +76,13 @@ def test_precision_incomplete_profile_bands():
                         {
                             "field": "sweat_level",
                             "required": True,
+                            # band_impact arrives on the same grid the band
+                            # endpoints render on: 10 g/hr, 100 mg/hr,
+                            # 100 mL/hr. Keep fixtures on it.
                             "band_impact": {
-                                "carb_g_per_hr": 0.4,
-                                "sodium_mg_per_hr": 86.1,
-                                "fluid_ml_per_hr": 79.0,
+                                "carb_g_per_hr": 10,
+                                "sodium_mg_per_hr": 100,
+                                "fluid_ml_per_hr": 100,
                             },
                         }
                     ],
@@ -95,7 +98,7 @@ def test_precision_incomplete_profile_bands():
 
     assert p["profile_complete"] is False
     assert p["missing_fields"][0]["field"] == "sweat_level"
-    assert p["missing_fields"][0]["band_impact"]["sodium_mg_per_hr"] == 86.1
+    assert p["missing_fields"][0]["band_impact"]["sodium_mg_per_hr"] == 100
     assert "ot=" in p["onboarding"]["url"]
 
 
