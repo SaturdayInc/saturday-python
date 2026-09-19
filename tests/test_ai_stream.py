@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -102,6 +103,9 @@ def test_multiline_and_framing(monkeypatch, newline):
     ((START + 'data: {"delta":NaN}\n\n').encode(), "malformed_stream"),
     (END.encode(), "malformed_stream"),
     ((START + frame("message_end", {"conversation_id": "other"})).encode(), "malformed_stream"),
+    ((START + START + END).encode(), "malformed_stream"),
+    ((START + END + END).encode(), "malformed_stream"),
+    ((START + END + frame("message_start", {"conversation_id": "two"}) + frame("text_delta", {"delta": "partial"})).encode(), "malformed_stream"),
 ])
 def test_malformed_and_eof_never_replay(monkeypatch, data, code):
     requests, chunks = install(monkeypatch, data)
@@ -128,6 +132,22 @@ def test_errors_are_preserved_and_never_success(monkeypatch, finish):
     assert error.value.code == "stream_error"
     assert error.value.event["data"] == {"message": "failed", "future": 1}
     assert "safety_warning" in [event["event"] for event in seen]
+    assert len(requests) == 1 and chunks.closed
+
+
+def test_events_after_message_end_are_preserved(monkeypatch):
+    data = START + END + frame("safety_warning", {"message": "Keep visible"}) + frame("future_event", {"flag": True}) + frame("error", {"message": "late failure"})
+    requests, chunks = install(monkeypatch, data.encode())
+    seen = []
+    with Saturday(api_key="placeholder") as client:
+        async def run():
+            async with client.ai.send_message_stream("conv", "hello") as events:
+                async for event in events:
+                    seen.append(event["event"])
+        with pytest.raises(SaturdayError) as error:
+            asyncio.run(run())
+    assert error.value.code == "stream_error"
+    assert seen == ["message_start", "message_end", "safety_warning", "future_event", "error"]
     assert len(requests) == 1 and chunks.closed
 
 
@@ -170,6 +190,36 @@ def test_consumer_break_closes_without_pending_read(monkeypatch):
     assert len(requests) == 1 and chunks.closed
 
 
+@pytest.mark.parametrize("error", [ValueError("caller failure"), httpx.ReadError("caller HTTP failure"), asyncio.CancelledError()])
+def test_cleanup_failure_preserves_caller_error(monkeypatch, error):
+    requests, chunks = install(monkeypatch, START.encode(), stall=True)
+    async def broken_close():
+        chunks.closed = True
+        raise httpx.ReadError("cleanup failure")
+    chunks.aclose = broken_close
+    with Saturday(api_key="placeholder") as client:
+        async def run():
+            with pytest.raises(type(error)) as caught:
+                async with client.ai.send_message_stream("conv", "hello") as events:
+                    await events.__anext__()
+                    raise error
+            assert caught.value is error
+        asyncio.run(run())
+    assert len(requests) == 1 and chunks.closed
+
+
+def test_external_cancellation_during_cleanup_propagates(monkeypatch):
+    requests, chunks = install(monkeypatch, START.encode(), stall=True)
+    with Saturday(api_key="placeholder") as client:
+        async def run():
+            async with client.ai.send_message_stream("conv", "hello") as events:
+                await events.__anext__()
+                asyncio.get_running_loop().call_soon(asyncio.current_task().cancel)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(run())
+    assert len(requests) == 1 and chunks.closed
+
+
 @pytest.mark.parametrize("data", [b"null", b'"failure"', b"{not JSON}"])
 def test_malformed_http_error_body(monkeypatch, data):
     requests, chunks = install(monkeypatch, data, status=503)
@@ -203,6 +253,21 @@ def test_warning_before_malformed_frame(monkeypatch):
     assert chunks.closed
 
 
+def test_warning_before_invalid_utf8_same_chunk(monkeypatch):
+    requests, chunks = install(monkeypatch, (START + frame("safety_warning", {"message": "Keep visible"})).encode() + b"\xff")
+    seen = []
+    with Saturday(api_key="placeholder") as client:
+        async def run():
+            async with client.ai.send_message_stream("conv", "hello") as events:
+                async for event in events:
+                    seen.append(event["event"])
+        with pytest.raises(SaturdayError) as error:
+            asyncio.run(run())
+        assert error.value.code == "malformed_stream"
+    assert seen == ["message_start", "safety_warning"]
+    assert len(requests) == 1 and chunks.closed
+
+
 def test_deadline_during_consumer_pause(monkeypatch):
     requests, chunks = install(monkeypatch, (START + END).encode())
     with Saturday(api_key="placeholder") as client:
@@ -216,6 +281,22 @@ def test_deadline_during_consumer_pause(monkeypatch):
                 assert error.value.code == "timeout"
         asyncio.run(run())
     assert len(requests) == 1
+
+
+def test_deadline_during_synchronous_consumer_pause(monkeypatch):
+    requests, chunks = install(monkeypatch, (START + END).encode())
+    with Saturday(api_key="placeholder") as client:
+        async def run():
+            async with client.ai.send_message_stream("conv", "hello", timeout=0.02) as events:
+                await events.__anext__()
+                until = time.monotonic() + 0.06
+                while time.monotonic() < until:
+                    pass
+                with pytest.raises(SaturdayError) as error:
+                    await events.__anext__()
+                assert error.value.code == "timeout"
+        asyncio.run(run())
+    assert len(requests) == 1 and chunks.closed
 
 
 def test_exact_ai_readme_example(monkeypatch, capsys):
