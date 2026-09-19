@@ -1,18 +1,16 @@
 # Contributing
 
-Thank you for your interest in contributing to the Saturday SDK.
+## Bug reports
 
-## Bug Reports
-
-Please file an issue on this repository with:
+File an issue on this repository with:
 - SDK version
-- Language/runtime version
+- Python version
 - Minimal reproduction steps
-- Expected vs actual behavior
+- Expected and actual behavior
 
 ## Development
 
-Install the package and test dependencies in a virtual environment, then run the isolated HTTP tests:
+Install the package and test dependencies in a virtual environment, then run the tests:
 
 ```bash
 python -m venv .venv
@@ -21,8 +19,8 @@ python -m pip install -e '.[test]'
 python -m pytest
 ```
 
-Update `saturday/` against the current [API documentation](https://docs.saturday.fit/introduction). Add regression coverage in `tests/` for behavior changes. Tests use mocked responses and do not require an API key.
+Update `saturday/` against the current [API documentation](https://docs.saturday.fit/introduction). Add regression coverage in `tests/` for behavior changes. Tests use mocked responses and need no API key.
 
-## Code of Conduct
+## Code of conduct
 
-Be kind. Be constructive. We're building tools that help athletes stay safe.
+Be kind and constructive.

@@ -13,7 +13,7 @@ Personalized fuel, hydration, and electrolyte prescriptions for endurance athlet
 pip install saturday
 ```
 
-## Quick Start
+## Quick start
 
 ```python
 from saturday import Saturday
@@ -39,32 +39,51 @@ print(f"Sodium: {sodium} mg/hr")
 print(f"Fluid: {fluid} mL/hr")
 ```
 
-Teaser responses and incomplete profiles return ranges. A `full` tier alone does not guarantee exact numbers. Exact zero values may be omitted from the response, so the example displays them as `0`. See [Athlete Onboarding](https://docs.saturday.fit/guides/onboarding).
+Teaser-tier responses and incomplete profiles return ranges rather than exact numbers, and the `full` tier alone does not guarantee exact values. A zero value may be omitted from the response, so the example prints `0` for it. See [Athlete Onboarding](https://docs.saturday.fit/guides/onboarding).
 
 ## Features
 
 - TypedDict responses with a `py.typed` marker (PEP 561); values stay ordinary dictionaries
-- Automatic retry with exponential backoff for JSON operations; AI stream writes are never replayed
-- Typed errors (`AuthenticationError`, `RateLimitError`, `ValidationError`, `NotFoundError`)
+- Automatic retry on `429` and `5xx` responses for JSON operations: up to 3 retries, with 1 s, 2 s, and 4 s backoff. AI stream writes are never replayed
+- Typed errors: `AuthenticationError`, `RateLimitError`, `ValidationError`, `NotFoundError`, `AIStreamError`
 - API key and OAuth2 Bearer token authentication
-- Context manager support for clean connection handling
-- Safety types prominently surfaced (`not_instructions` documented)
+- Context manager and `close()` for connection cleanup
+- `safety` object with `not_instructions` on every prescription
+
+## Configuration
+
+```python
+from saturday import Saturday
+
+client = Saturday(
+    api_key="sk_test_...",
+    base_url="https://api.saturday.fit",  # default
+    timeout=30.0,  # seconds, per connect, read, and write on JSON requests; default 30
+    max_retries=3,  # default; 0 disables retries
+)
+client.close()
+```
 
 ## Authentication
 
 ```python
-# API key (server-to-server)
+# Partner API key (server-to-server)
 client = Saturday(api_key="sk_live_...")
 
-# OAuth2 Bearer token (athlete-delegated access)
+# OAuth2 Bearer token (athlete-delegated access); it takes precedence over the API key
 client = Saturday(api_key="sk_live_...", bearer_token="eyJ...")
+
+# Coach API key, for the coach resource
+client = Saturday(api_key="cp_live_...")
 
 # Context manager for automatic cleanup
 with Saturday(api_key="sk_live_...") as client:
     rx = client.nutrition.calculate(activity_type="run", duration_min=60)
 ```
 
-## Error Handling
+Partner keys carry the `sk_live_` or `sk_test_` prefix; coach keys carry `cp_live_` or `cp_test_`.
+
+## Error handling
 
 ```python
 from saturday import Saturday, RateLimitError, ValidationError, NotFoundError
@@ -81,19 +100,23 @@ except NotFoundError:
     print("Resource not found")
 ```
 
+`retry_after` is the server's `Retry-After` value in seconds, or 60 when the response carries none.
+
 ## Resources
 
 | Resource | Description |
 |----------|-------------|
 | `client.nutrition` | Calculate prescriptions, batch calculate |
-| `client.athletes` | Athlete CRUD, settings, batch create, GDPR export |
+| `client.athletes` | Athlete CRUD, settings, batch create, GDPR data export |
 | `client.activities` | Activity CRUD, prescription calculation, import, feedback |
-| `client.products` | Product search, barcode lookup, curated list |
-| `client.ai` | Async AI event streams plus synchronous JSON metadata and history |
+| `client.products` | Product search, barcode lookup, curated list, categories |
+| `client.ai` | Async AI event streams, plus synchronous JSON conversation metadata, history, listing, and deletion; see AI writes below |
 | `client.webhooks` | Webhook registration and management |
-| `client.organizations` | Team/org management with members |
+| `client.organizations` | Team and organization management with members |
 | `client.gear` | Athlete gear inventory |
 | `client.knowledge` | Sports nutrition knowledge base search |
+| `client.onboarding` | The versioned onboarding question schema, for collecting an athlete's profile in your UI |
+| `client.coach` | Roster fueling reads, the coach's alert and report configuration, and coach webhooks, with a coach key |
 
 ## Prescription and batch responses
 
@@ -163,7 +186,7 @@ Persist the received events if you need an exact record. Stored conversation his
 
 ## Documentation
 
-Full API documentation: [docs.saturday.fit](https://docs.saturday.fit)
+Full API reference: [docs.saturday.fit](https://docs.saturday.fit)
 
 ## Requirements
 
