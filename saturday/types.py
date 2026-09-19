@@ -1,6 +1,6 @@
 """Wire response types. Values remain ordinary dictionaries at runtime."""
 
-from typing import Any, Dict, List, Literal, Optional, TypedDict
+from typing import List, Literal, Optional, TypedDict
 
 
 class SafetyMetadata(TypedDict):
@@ -151,10 +151,29 @@ class Activity(_ActivityRequired, total=False):
     feedback: ActivityFeedback
 
 
+class AthleteSettings(TypedDict, total=False):
+    sweat_level: int
+    saltiness: int
+    satiety_level: int
+    fitness_level: int
+    carb_experience: str
+    usual_carb_consumption: str
+    carb_upper_limit_override: int
+    muscle_cramps: bool
+    gut_distress: bool
+    performance: bool
+    hunger: bool
+    heat_tolerance: bool
+    faintness: bool
+    drinking_resistance: bool
+    thirst: bool
+    concerns_answered: bool
+
+
 class _AthleteRequired(TypedDict):
     id: str
     partner_id: str
-    settings: Dict[str, Any]
+    settings: AthleteSettings
     profile_complete: bool
     created_at: int  # Epoch seconds.
     updated_at: int  # Epoch seconds.
@@ -171,6 +190,29 @@ class Athlete(_AthleteRequired, total=False):
     partner_plan: str
     org_id: str
     subscription_status: str
+
+
+class _PaginationRequired(TypedDict):
+    total: int
+    has_more: bool
+
+
+class PaginationMeta(_PaginationRequired, total=False):
+    """total counts this page; pass next_cursor as the next request's cursor."""
+
+    next_cursor: str
+
+
+class AthleteListResponse(TypedDict):
+    athletes: List[Athlete]
+    pagination: PaginationMeta
+    request_id: str
+
+
+class ActivityListResponse(TypedDict):
+    activities: List[Activity]
+    pagination: PaginationMeta
+    request_id: str
 
 
 class BatchError(TypedDict):

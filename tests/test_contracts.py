@@ -18,6 +18,9 @@ MODELS = {
     "activity_teaser": "PrescriptionEnvelope", "activity_trial": "PrescriptionEnvelope",
     "stored_exact": "StoredPrescriptionResponse", "stored_banded": "StoredPrescriptionResponse",
     "activity": "Activity", "athlete": "Athlete", "feedback": "ActivityFeedback",
+    "list_athletes_next": "AthleteListResponse", "list_athletes_empty": "AthleteListResponse",
+    "list_activities_next": "ActivityListResponse", "list_activities_empty": "ActivityListResponse",
+    "settings_full": "AthleteSettings", "settings_empty": "AthleteSettings", "settings_updated": "AthleteSettings",
     "batch_partial": "BatchCalculateResponse", "batch_all_failed": "BatchCalculateResponse", "batch_estimate": "BatchCalculateResponse",
     "athletes_partial": "BatchAthleteResponse", "athletes_all_failed": "BatchAthleteResponse",
     "import_plain": "ActivityImportResponse", "import_calculated": "ActivityImportResponse",
@@ -112,3 +115,47 @@ def test_calculating_is_not_the_import_default():
     client._client = httpx.Client(base_url=client._base_url, transport=httpx.MockTransport(send))
     with client:
         client.activities.import_activities("ath_1", [{"type": "bike", "duration_min": 120}])
+
+
+@pytest.mark.parametrize("name", ["list_athletes_next", "list_athletes_empty", "list_activities_next", "list_activities_empty"])
+@pytest.mark.parametrize("options", [{}, {"limit": 1, "cursor": "1700000000"}])
+def test_pagination_and_query_defaults_are_preserved(name, options):
+    payload = {**FIXTURES[name], "future_field": True}
+    athletes = name.startswith("list_athletes")
+
+    def send(request):
+        assert request.method == "GET"
+        assert request.url.path == ("/v1/athletes" if athletes else "/v1/athletes/ath_1/activities")
+        assert dict(request.url.params) == {key: str(value) for key, value in (options or {"limit": 50 if athletes else 20}).items()}
+        return httpx.Response(200, json=payload)
+
+    client = Saturday(api_key="sk_test_fixture", max_retries=0)
+    client._client.close()
+    client._client = httpx.Client(base_url=client._base_url, transport=httpx.MockTransport(send))
+    with client:
+        result = client.athletes.list(**options) if athletes else client.activities.list("ath_1", **options)
+    assert type(result) is dict
+    assert result == payload
+
+
+@pytest.mark.parametrize("name", ["settings_full", "settings_empty", "settings_updated"])
+def test_flat_settings_payload_and_raw_return_are_preserved(name):
+    payload = {**FIXTURES[name], "future_field": True}
+    methods = []
+
+    def send(request):
+        methods.append(request.method)
+        assert request.url.path == "/v1/athletes/ath_1/settings"
+        if request.method == "PATCH":
+            assert json.loads(request.content) == {"sweat_level": 5, "gut_distress": False}
+        return httpx.Response(200, json=payload)
+
+    client = Saturday(api_key="sk_test_fixture", max_retries=0)
+    client._client.close()
+    client._client = httpx.Client(base_url=client._base_url, transport=httpx.MockTransport(send))
+    with client:
+        assert client.athletes.get_settings("ath_1") == payload
+        result = client.athletes.update_settings("ath_1", sweat_level=5, gut_distress=False)
+    assert type(result) is dict
+    assert result == payload
+    assert methods == ["GET", "PATCH"]

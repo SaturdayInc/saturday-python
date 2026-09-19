@@ -18,6 +18,10 @@ from saturday.types import (
     Activity,
     ActivityFeedback,
     ActivityImportResponse,
+    ActivityListResponse,
+    Athlete,
+    AthleteListResponse,
+    AthleteSettings,
     BatchAthleteResponse,
     BatchCalculateResponse,
     ImportActivityRequest,
@@ -233,19 +237,20 @@ class _AthletesResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def create(self, **kwargs: Any) -> Dict[str, Any]:
+    def create(self, **kwargs: Any) -> Athlete:
         """Create a new athlete under your partner account."""
         return self._client.request("POST", "/v1/athletes", json=kwargs)
 
-    def get(self, athlete_id: str) -> Dict[str, Any]:
+    def get(self, athlete_id: str) -> Athlete:
         """Get an athlete by ID."""
         return self._client.request("GET", f"/v1/athletes/{athlete_id}")
 
-    def list(self, *, limit: int = 50, cursor: Optional[str] = None, search: Optional[str] = None) -> Dict[str, Any]:
+    def list(self, *, limit: int = 50, cursor: Optional[str] = None, search: Optional[str] = None) -> AthleteListResponse:
         """List athletes for your partner account.
 
-        The response array is under the ``athletes`` key, with ``has_more`` and a
-        ``cursor`` for the next page. Pass that ``cursor`` back here to page forward.
+        The array is under ``athletes``. Read ``pagination.has_more`` and pass
+        ``pagination.next_cursor`` back as ``cursor`` for the next page.
+        The legacy ``search`` argument is currently ignored by the API.
         """
         params: Dict[str, Any] = {"limit": limit}
         if cursor:
@@ -254,7 +259,7 @@ class _AthletesResource:
             params["search"] = search
         return self._client.request("GET", "/v1/athletes", params=params)
 
-    def update(self, athlete_id: str, **kwargs: Any) -> Dict[str, Any]:
+    def update(self, athlete_id: str, **kwargs: Any) -> Athlete:
         """Partially update an athlete's profile."""
         return self._client.request("PATCH", f"/v1/athletes/{athlete_id}", json=kwargs)
 
@@ -262,12 +267,12 @@ class _AthletesResource:
         """Delete an athlete and all associated data."""
         self._client.request("DELETE", f"/v1/athletes/{athlete_id}")
 
-    def get_settings(self, athlete_id: str) -> Dict[str, Any]:
+    def get_settings(self, athlete_id: str) -> AthleteSettings:
         """Get an athlete's fueling preference settings."""
         return self._client.request("GET", f"/v1/athletes/{athlete_id}/settings")
 
-    def update_settings(self, athlete_id: str, **kwargs: Any) -> Dict[str, Any]:
-        """Update an athlete's fueling preference settings."""
+    def update_settings(self, athlete_id: str, **kwargs: Any) -> AthleteSettings:
+        """Replace partner-managed athlete settings; send the complete intended settings."""
         return self._client.request("PATCH", f"/v1/athletes/{athlete_id}/settings", json=kwargs)
 
     def batch_create(self, athletes: List[Dict[str, Any]]) -> BatchAthleteResponse:
@@ -291,11 +296,11 @@ class _ActivitiesResource:
         """Get an activity by ID."""
         return self._client.request("GET", f"/v1/athletes/{athlete_id}/activities/{activity_id}")
 
-    def list(self, athlete_id: str, *, limit: int = 20, cursor: Optional[str] = None) -> Dict[str, Any]:
+    def list(self, athlete_id: str, *, limit: int = 20, cursor: Optional[str] = None) -> ActivityListResponse:
         """List activities for an athlete.
 
-        The response array is under the ``activities`` key, with ``has_more`` and a
-        ``cursor`` for the next page. Pass that ``cursor`` back here to page forward.
+        The array is under ``activities``. Read ``pagination.has_more`` and pass
+        ``pagination.next_cursor`` back as ``cursor`` for the next page.
         """
         params: Dict[str, Any] = {"limit": limit}
         if cursor:

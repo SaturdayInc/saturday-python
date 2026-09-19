@@ -117,7 +117,13 @@ Batch calculations return flat `results[]`, not indexed prescription wrappers. A
 
 `activities.import_activities(athlete_id, activities, calculate=True)` creates activities and optionally calculates prescriptions. Omit `calculate` to avoid global calculation; individual activities may explicitly set `calculate=True`. A global `False` does not override a per-activity `True`. Calculation outcomes appear in `prescriptions[]`; a failed calculation does not undo an imported activity. Each batch/import item counts toward the applicable quota; requested calculations may also consume trial calls.
 
-Static type checking may now flag access to fields the server never returned. Dictionary indexing and existing runtime values are unchanged.
+Static type checking may now flag access to fields the server never returned. TypedDict values also cannot be passed directly to helpers annotated `Dict[str, Any]`: use `Mapping[str, object]` for read-only helpers, or `dict(response)` when you intentionally need a mutable dictionary copy. Dictionary indexing and existing runtime values are unchanged.
+
+Athlete and activity list responses keep the resource array under `athletes` or `activities`. Pagination is nested: check `page["pagination"]["has_more"]` and pass `page["pagination"].get("next_cursor")` as the next request's `cursor` argument. `page["pagination"]["total"]` counts records on that page, not the entire collection.
+
+The legacy athlete-list `search` argument is currently ignored by the backend. It remains accepted for source compatibility, but does not filter results.
+
+Athlete settings use flat concern flags, such as `sweat_level=5, gut_distress=True`, not a nested `concerns` object. `athletes.update_settings()` replaces the complete settings for a partner-managed athlete; omitted settings reset. Send the complete intended settings, including values you want to preserve. The SDK does not fetch or merge settings implicitly.
 
 ## AI writes
 
