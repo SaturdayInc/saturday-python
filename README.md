@@ -43,7 +43,7 @@ Teaser responses and incomplete profiles return ranges. A `full` tier alone does
 
 ## Features
 
-- Type hints with a `py.typed` marker (PEP 561); resource responses are dictionaries
+- TypedDict responses with a `py.typed` marker (PEP 561); values stay ordinary dictionaries
 - Automatic retry with exponential backoff (429s and 5xx)
 - Typed errors (`AuthenticationError`, `RateLimitError`, `ValidationError`, `NotFoundError`)
 - API key and OAuth2 Bearer token authentication
@@ -87,13 +87,37 @@ except NotFoundError:
 |----------|-------------|
 | `client.nutrition` | Calculate prescriptions, batch calculate |
 | `client.athletes` | Athlete CRUD, settings, batch create, GDPR export |
-| `client.activities` | Activity CRUD, prescription calculation, feedback |
+| `client.activities` | Activity CRUD, prescription calculation, import, feedback |
 | `client.products` | Product search, barcode lookup, curated list |
 | `client.ai` | Conversation metadata and history; see AI writes below |
 | `client.webhooks` | Webhook registration and management |
 | `client.organizations` | Team/org management with members |
 | `client.gear` | Athlete gear inventory |
 | `client.knowledge` | Sports nutrition knowledge base search |
+
+## Prescription and batch responses
+
+The exported types in `saturday.types` describe the existing wire dictionaries; they do not validate, filter, or convert responses. `nutrition.calculate()` returns flat nutrition fields. `activities.calculate_prescription()` returns a `PrescriptionEnvelope`: full-tier results are under `prescription`, while teaser ranges are at the top level. Full-tier prescriptions can also contain ranges when inputs are incomplete.
+
+`activities.get_prescription()` returns `{ "prescription": ..., "safety": ... }`, with no `tier` field. Activity timestamps, including `calculated_at`, use epoch seconds; `trial_ends_at` uses epoch milliseconds. Safety warnings may be `None`.
+
+```python
+from saturday import Saturday, StoredPrescriptionResponse
+
+with Saturday(api_key="sk_live_...") as client:
+    stored: StoredPrescriptionResponse = client.activities.get_prescription("ath_123", "act_123")
+    prescription = stored["prescription"]
+    carbs = prescription.get("carb_range_g_per_hr", prescription["carb_g_per_hr"])
+    print(f"Carbs: {carbs} g/hr")
+    for warning in stored["safety"]["warnings"] or []:
+        print(warning)
+```
+
+Batch calculations return flat `results[]`, not indexed prescription wrappers. Athlete batches return `created[]`. Success arrays preserve input order with failed items omitted; `errors[]` contains each failed item's original `index`, `code`, and `message`.
+
+`activities.import_activities(athlete_id, activities, calculate=True)` creates activities and optionally calculates prescriptions. Omit `calculate` to avoid global calculation; individual activities may explicitly set `calculate=True`. A global `False` does not override a per-activity `True`. Calculation outcomes appear in `prescriptions[]`; a failed calculation does not undo an imported activity. Each batch/import item counts toward the applicable quota; requested calculations may also consume trial calls.
+
+Static type checking may now flag access to fields the server never returned. Dictionary indexing and existing runtime values are unchanged.
 
 ## AI writes
 

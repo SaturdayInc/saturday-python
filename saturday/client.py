@@ -9,11 +9,22 @@ nutrition response for AI consumers.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import httpx
 
 from saturday.errors import RateLimitError, SaturdayError
+from saturday.types import (
+    Activity,
+    ActivityFeedback,
+    ActivityImportResponse,
+    BatchAthleteResponse,
+    BatchCalculateResponse,
+    ImportActivityRequest,
+    NutritionCalculateResponse,
+    PrescriptionEnvelope,
+    StoredPrescriptionResponse,
+)
 
 SDK_VERSION = "0.6.0"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
@@ -171,12 +182,12 @@ class _NutritionResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def calculate(self, **kwargs: Any) -> Dict[str, Any]:
+    def calculate(self, **kwargs: Any) -> NutritionCalculateResponse:
         """Calculate a personalized fuel/hydration/electrolyte prescription."""
         return self._client.request("POST", "/v1/nutrition/calculate", json=kwargs)
 
-    def batch_calculate(self, scenarios: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Batch calculate prescriptions for multiple scenarios (max 50)."""
+    def batch_calculate(self, scenarios: List[Dict[str, Any]]) -> BatchCalculateResponse:
+        """Batch calculate up to 50 scenarios; quota is charged per scenario."""
         return self._client.request("POST", "/v1/nutrition/calculate/batch", json={"scenarios": scenarios})
 
 
@@ -259,8 +270,8 @@ class _AthletesResource:
         """Update an athlete's fueling preference settings."""
         return self._client.request("PATCH", f"/v1/athletes/{athlete_id}/settings", json=kwargs)
 
-    def batch_create(self, athletes: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Batch create up to 100 athletes."""
+    def batch_create(self, athletes: List[Dict[str, Any]]) -> BatchAthleteResponse:
+        """Batch create up to 100 athletes; quota is charged per athlete."""
         return self._client.request("POST", "/v1/athletes/batch", json={"athletes": athletes})
 
     def export(self, athlete_id: str) -> Dict[str, Any]:
@@ -272,11 +283,11 @@ class _ActivitiesResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def create(self, athlete_id: str, **kwargs: Any) -> Dict[str, Any]:
+    def create(self, athlete_id: str, **kwargs: Any) -> Activity:
         """Create a new activity for an athlete."""
         return self._client.request("POST", f"/v1/athletes/{athlete_id}/activities", json=kwargs)
 
-    def get(self, athlete_id: str, activity_id: str) -> Dict[str, Any]:
+    def get(self, athlete_id: str, activity_id: str) -> Activity:
         """Get an activity by ID."""
         return self._client.request("GET", f"/v1/athletes/{athlete_id}/activities/{activity_id}")
 
@@ -291,7 +302,7 @@ class _ActivitiesResource:
             params["cursor"] = cursor
         return self._client.request("GET", f"/v1/athletes/{athlete_id}/activities", params=params)
 
-    def update(self, athlete_id: str, activity_id: str, **kwargs: Any) -> Dict[str, Any]:
+    def update(self, athlete_id: str, activity_id: str, **kwargs: Any) -> Activity:
         """Partially update an activity."""
         return self._client.request("PATCH", f"/v1/athletes/{athlete_id}/activities/{activity_id}", json=kwargs)
 
@@ -299,15 +310,28 @@ class _ActivitiesResource:
         """Delete an activity and its prescription."""
         self._client.request("DELETE", f"/v1/athletes/{athlete_id}/activities/{activity_id}")
 
-    def calculate_prescription(self, athlete_id: str, activity_id: str) -> Dict[str, Any]:
+    def calculate_prescription(self, athlete_id: str, activity_id: str) -> PrescriptionEnvelope:
         """Calculate/recalculate a nutrition prescription for this activity."""
         return self._client.request("POST", f"/v1/athletes/{athlete_id}/activities/{activity_id}/calculate")
 
-    def get_prescription(self, athlete_id: str, activity_id: str) -> Dict[str, Any]:
+    def get_prescription(self, athlete_id: str, activity_id: str) -> StoredPrescriptionResponse:
         """Get the stored prescription for an activity."""
         return self._client.request("GET", f"/v1/athletes/{athlete_id}/activities/{activity_id}/prescription")
 
-    def submit_feedback(self, athlete_id: str, activity_id: str, **kwargs: Any) -> Dict[str, Any]:
+    def import_activities(
+        self,
+        athlete_id: str,
+        activities: Sequence[Union[ImportActivityRequest, Dict[str, Any]]],
+        *,
+        calculate: Optional[bool] = None,
+    ) -> ActivityImportResponse:
+        """Import up to 200 activities; calculation is opt-in and quota is per activity."""
+        payload: Dict[str, Any] = {"activities": activities}
+        if calculate is not None:
+            payload["calculate"] = calculate
+        return self._client.request("POST", f"/v1/athletes/{athlete_id}/activities/import", json=payload)
+
+    def submit_feedback(self, athlete_id: str, activity_id: str, **kwargs: Any) -> ActivityFeedback:
         """Submit post-activity feedback on prescription quality."""
         return self._client.request("POST", f"/v1/athletes/{athlete_id}/activities/{activity_id}/feedback", json=kwargs)
 
