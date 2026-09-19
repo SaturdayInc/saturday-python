@@ -17,6 +17,13 @@ import httpx
 from saturday.errors import RateLimitError, SaturdayError
 from saturday.ai_stream import AIStreamError, AIStreamEvent, stream_ai
 from saturday.types import (
+    CoachSeatState,
+    CoachLedgerPage,
+    CoachTierStatus,
+    CoachConnectSummary,
+    CoachConnectEarnings,
+    CoachConnectChargesPage,
+    CoachConnectArrangements,
     Activity,
     ActivityFeedback,
     ActivityImportResponse,
@@ -32,7 +39,7 @@ from saturday.types import (
     StoredPrescriptionResponse,
 )
 
-SDK_VERSION = "0.6.1"
+SDK_VERSION = "0.7.0"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
 DEFAULT_TIMEOUT = 30.0
 # AI turns run up to the API's 60 s request cap, so an unconfigured stream deadline is longer than the JSON default.
@@ -696,6 +703,63 @@ class _CoachResource:
     def enable_webhook(self, webhook_id: str) -> Dict[str, Any]:
         """Re-enable a previously disabled webhook endpoint."""
         return self._client.request("POST", f"/v1/coach/webhooks/{webhook_id}/enable")
+
+    # --- Billing (read-only; the key must carry billing:read) ---
+
+    def seat_state(self, *, org_id: Optional[str] = None) -> CoachSeatState:
+        """The live seat picture. Pass ``org_id`` to read the coach's own organization as payer."""
+        params = {"org_id": org_id} if org_id else None
+        return self._client.request("GET", "/v1/coach/billing/seat-state", params=params)
+
+    def ledger(
+        self,
+        *,
+        view: Optional[str] = None,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> CoachLedgerPage:
+        """One page of the coach's financial ledger, newest first.
+
+        ``view`` is ``all``, ``expenditures`` or ``inflows``; ``limit`` is 1 to 200;
+        pass a page's ``next_cursor`` back as ``cursor`` for the next one.
+        """
+        params: Dict[str, Any] = {}
+        if view:
+            params["view"] = view
+        if limit is not None:
+            params["limit"] = limit
+        if cursor:
+            params["cursor"] = cursor
+        return self._client.request("GET", "/v1/coach/billing/ledger", params=params or None)
+
+    def tier_status(self) -> CoachTierStatus:
+        """The coach's active tier subscriptions and access status."""
+        return self._client.request("GET", "/v1/coach/billing/tier-status")
+
+    def connect_summary(self) -> CoachConnectSummary:
+        """Stripe Connect account status plus this month's and lifetime totals."""
+        return self._client.request("GET", "/v1/coach/billing/connect/summary")
+
+    def connect_earnings(self) -> CoachConnectEarnings:
+        """Earnings totals across settled charges plus the most recent per-charge breakdowns."""
+        return self._client.request("GET", "/v1/coach/billing/connect/earnings")
+
+    def connect_transactions(
+        self, *, limit: Optional[int] = None, cursor: Optional[str] = None
+    ) -> CoachConnectChargesPage:
+        """One page of Connect charges, newest first. Pass ``next_cursor`` back as ``cursor``."""
+        params: Dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if cursor:
+            params["cursor"] = cursor
+        return self._client.request(
+            "GET", "/v1/coach/billing/connect/transactions", params=params or None
+        )
+
+    def connect_arrangements(self) -> CoachConnectArrangements:
+        """Every billing arrangement the coach has configured, in any status."""
+        return self._client.request("GET", "/v1/coach/billing/connect/arrangements")
 
 
 def _coach_read_params(window: Optional[int], focus: Optional[str]) -> Optional[Dict[str, Any]]:

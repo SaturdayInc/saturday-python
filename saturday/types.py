@@ -1,6 +1,6 @@
 """Wire response types. Values remain ordinary dictionaries at runtime."""
 
-from typing import List, Literal, Optional, TypedDict
+from typing import Any, Dict, List, Literal, Optional, TypedDict
 
 
 class SafetyMetadata(TypedDict):
@@ -272,3 +272,242 @@ class _ActivityImportRequired(BatchSummary):
 
 class ActivityImportResponse(_ActivityImportRequired, total=False):
     prescriptions: List[ImportPrescriptionItem]
+
+
+# --- Coach billing (read-only; a key carrying billing:read) ---
+#
+# The figures the portal's Billing pages show, for the coach who minted the key.
+# Amounts are integer cents in the row's currency; timestamps are Unix milliseconds.
+
+
+class CoachSeatState(TypedDict):
+    tier: str
+    included_total: int
+    included_used: int
+    coach_paid_count: int
+    next_athlete_price_cents: int
+    volume_tier: int
+    volume_discount_pct: int
+    total_monthly_cents: int
+    is_fair_use: bool
+
+
+class _CoachLedgerEntryRequired(TypedDict):
+    id: str
+    entry_id: str
+    user_uid: str
+    direction: Literal["charge", "receipt", "refund", "covered_by"]
+    amount_cents: int
+    currency: str
+    category: str
+    counterparty_type: str
+    counterparty_display_name: str
+    source_type: str
+    source_reference_id: str
+    description: str
+    occurred_at: int
+    created_at: int
+
+
+class CoachLedgerEntry(_CoachLedgerEntryRequired, total=False):
+    counterparty_id: str
+    period_start: int
+    period_end: int
+    receipt_url: str
+    metadata: Dict[str, Any]
+    related_relationship_id: str
+    related_arrangement_id: str
+    tags: List[str]
+    charge_group_id: str
+    settlement_status: str
+
+
+class _CoachLedgerPageRequired(TypedDict):
+    entries: List[CoachLedgerEntry]
+
+
+class CoachLedgerPage(_CoachLedgerPageRequired, total=False):
+    """next_cursor is present only when another page exists; pass it back as cursor."""
+
+    next_cursor: str
+
+
+class _CoachTierSubscriptionRequired(TypedDict):
+    subscription_id: str
+    subscriber_type: str
+    subscriber_id: str
+    tier: str
+    channel: str
+    source_sku: str
+    status: str
+    current_period_start: int
+    current_period_end: int
+    amount_cents: int
+    lifetime_discount_applied: bool
+    auto_renew: bool
+    created_at: int
+    updated_at: int
+
+
+class CoachTierSubscription(_CoachTierSubscriptionRequired, total=False):
+    stripe_subscription_id: str
+    iap_original_transaction_id: str
+    trial_ends_at: int
+    discount_code: str
+    canceled_at: int
+    grace_until: int
+    source_purchase_doc_id: str
+    purchased_assistant_seats: int
+
+
+class _CoachSubscriptionStatusRequired(TypedDict):
+    has_purchase: bool
+    has_tier_sub: bool
+    is_active: bool
+
+
+class CoachSubscriptionStatus(_CoachSubscriptionStatusRequired, total=False):
+    source: str
+    product_id: str
+    tier_id: str
+    expiry_date_ms: int
+    is_lifetime: bool
+    has_coverage: bool
+
+
+class CoachTierStatus(TypedDict):
+    subscriptions: List[CoachTierSubscription]
+    count: int
+    status: CoachSubscriptionStatus
+
+
+class _CoachConnectAccountRequired(TypedDict):
+    coach_uid: str
+    stripe_account_id: str
+    charges_enabled: bool
+    payouts_enabled: bool
+    details_submitted: bool
+    requirements_currently_due_count: int
+    country: str
+    default_currency: str
+    updated_at: int
+
+
+class CoachConnectAccount(_CoachConnectAccountRequired, total=False):
+    card_payments_status: str
+    transfers_status: str
+    capabilities: Dict[str, str]
+    onboarded_at: int
+    disabled_reason: str
+    closed: bool
+
+
+class CoachConnectSummary(TypedDict):
+    """connect_account is None for a coach with no Connect account."""
+
+    connect_account: Optional[CoachConnectAccount]
+    is_onboarded: bool
+    active_arrangements: int
+    month_charges_cents: int
+    month_fees_cents: int
+    month_net_cents: int
+    lifetime_charges_cents: int
+    lifetime_fees_cents: int
+    lifetime_net_cents: int
+    platform_fee_bps: int
+
+
+class CoachEarningsSummary(TypedDict):
+    coach_uid: str
+    total_gross_cents: int
+    total_stripe_fee_cents: int
+    total_platform_fee_cents: int
+    total_net_cents: int
+    charge_count: int
+    settled_count: int
+    settling_count: int
+    currency: str
+
+
+class _CoachChargeBreakdownRequired(TypedDict):
+    charge_group_id: str
+    gross_amount_cents: int
+    stripe_fees_cents: int
+    platform_fee_cents: int
+    net_to_coach_cents: int
+    currency: str
+    settlement_status: str
+    occurred_at: int
+
+
+class CoachChargeBreakdown(_CoachChargeBreakdownRequired, total=False):
+    athlete_uid: str
+    athlete_display_name: str
+
+
+class CoachConnectEarnings(TypedDict):
+    """breakdowns is an empty list when there are no charges."""
+
+    summary: CoachEarningsSummary
+    breakdowns: List[CoachChargeBreakdown]
+
+
+class _CoachConnectChargeRequired(TypedDict):
+    charge_id: str
+    coach_uid: str
+    athlete_uid: str
+    amount_cents: int
+    platform_fee_cents: int
+    stripe_fees_cents: int
+    net_to_coach_cents: int
+    currency: str
+    status: Literal["succeeded", "pending", "failed", "refunded", "disputed"]
+    captured_at: int
+    stripe_webhook_event_id: str
+
+
+class CoachConnectCharge(_CoachConnectChargeRequired, total=False):
+    arrangement_id: str
+    refund_amount_cents: int
+
+
+class _CoachConnectChargesPageRequired(TypedDict):
+    charges: List[CoachConnectCharge]
+    total: int
+
+
+class CoachConnectChargesPage(_CoachConnectChargesPageRequired, total=False):
+    """total counts this page; next_cursor is present only when another page exists."""
+
+    next_cursor: str
+
+
+class _CoachBillingArrangementRequired(TypedDict):
+    arrangement_id: str
+    coach_uid: str
+    athlete_uid: str
+    stripe_connect_account_id: str
+    billing_mode: Literal["recurring", "one_time", "invoice"]
+    amount_cents: int
+    currency: str
+    status: Literal["active", "paused", "canceled", "past_due"]
+    platform_fee_bps: int
+    created_at: int
+
+
+class CoachBillingArrangement(_CoachBillingArrangementRequired, total=False):
+    stripe_customer_id: str
+    stripe_subscription_id: str
+    interval: str
+    trial_days: int
+    promo_code: str
+    refund_policy: str
+    terms_text: str
+    activated_at: int
+    paused_at: int
+    canceled_at: int
+
+
+class CoachConnectArrangements(TypedDict):
+    arrangements: List[CoachBillingArrangement]
+    total: int

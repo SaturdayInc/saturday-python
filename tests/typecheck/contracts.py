@@ -2,6 +2,13 @@ from typing import Any, Dict, Mapping, Optional
 
 from saturday import (
     ActivityFeedback,
+    CoachConnectArrangements,
+    CoachConnectChargesPage,
+    CoachConnectEarnings,
+    CoachConnectSummary,
+    CoachLedgerPage,
+    CoachSeatState,
+    CoachTierStatus,
     ActivityImportResponse,
     ActivityListResponse,
     AthleteListResponse,
@@ -55,3 +62,18 @@ def check_resource_types(client: Saturday) -> None:
     activity_page["cursor"]  # type: ignore[typeddict-item]
     settings["concerns"]  # type: ignore[typeddict-item]
     settings["athlete_id"]  # type: ignore[typeddict-item]
+    seats: CoachSeatState = client.coach.seat_state(org_id="org_1")
+    ledger: CoachLedgerPage = client.coach.ledger(view="inflows", limit=50, cursor="1749480000000")
+    tier: CoachTierStatus = client.coach.tier_status()
+    summary: CoachConnectSummary = client.coach.connect_summary()
+    earnings: CoachConnectEarnings = client.coach.connect_earnings()
+    charges: CoachConnectChargesPage = client.coach.connect_transactions(limit=20)
+    arrangements: CoachConnectArrangements = client.coach.connect_arrangements()
+    fair_use: bool = seats["is_fair_use"]
+    next_cursor: Optional[str] = ledger.get("next_cursor")
+    active: bool = tier["status"]["is_active"]
+    account = summary["connect_account"]
+    country: Optional[str] = account["country"] if account is not None else None
+    net: int = earnings["summary"]["total_net_cents"] + charges["charges"][0]["net_to_coach_cents"] + arrangements["arrangements"][0]["amount_cents"]
+    ledger["pagination"]  # type: ignore[typeddict-item]
+    seats["next_athlete_price"]  # type: ignore[typeddict-item]
