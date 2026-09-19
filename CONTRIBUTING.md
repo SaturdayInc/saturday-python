@@ -12,8 +12,16 @@ Please file an issue on this repository with:
 
 ## Development
 
-This SDK is generated from Saturday's OpenAPI specification and polished for production use.
-See `REGENERATION.md` in the root SDK directory for the update workflow.
+Install the package and test dependencies in a virtual environment, then run the isolated HTTP tests:
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[test]'
+python -m pytest
+```
+
+Update `saturday/` against the current [API documentation](https://docs.saturday.fit/introduction). Add regression coverage in `tests/` for behavior changes. Tests use mocked responses and do not require an API key.
 
 ## Code of Conduct
 

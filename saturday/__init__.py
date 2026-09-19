@@ -18,12 +18,13 @@ Example::
         thermal_stress_level=7,
     )
 
-    # Safety metadata is ALWAYS included — athlete safety cannot be paywalled
+    # Safety metadata is included on every tier.
     print(prescription["safety"]["warnings"])
-    print(f"Carbs: {prescription['carb_g_per_hr']} g/hr")
+    carbs = prescription.get("carb_range_g_per_hr", prescription.get("carb_g_per_hr", 0))
+    print(f"Carbs: {carbs} g/hr")
 """
 
-from saturday.client import Saturday
+from saturday.client import SDK_VERSION, Saturday
 from saturday.errors import (
     SaturdayError,
     AuthenticationError,
@@ -32,7 +33,7 @@ from saturday.errors import (
     NotFoundError,
 )
 
-__version__ = "0.4.0"
+__version__ = SDK_VERSION
 __all__ = [
     "Saturday",
     "SaturdayError",
