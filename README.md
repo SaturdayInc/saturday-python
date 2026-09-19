@@ -13,7 +13,7 @@ Personalized fuel, hydration, and electrolyte prescriptions for endurance athlet
 pip install saturday
 ```
 
-## Quick Start
+## Quick start
 
 ```python
 from saturday import Saturday
@@ -39,32 +39,51 @@ print(f"Sodium: {sodium} mg/hr")
 print(f"Fluid: {fluid} mL/hr")
 ```
 
-Teaser responses and incomplete profiles return ranges. A `full` tier alone does not guarantee exact numbers. Exact zero values may be omitted from the response, so the example displays them as `0`. See [Athlete Onboarding](https://docs.saturday.fit/guides/onboarding).
+Teaser-tier responses and incomplete profiles return ranges rather than exact numbers, and the `full` tier alone does not guarantee exact values. A zero value may be omitted from the response, so the example prints `0` for it. See [Athlete Onboarding](https://docs.saturday.fit/guides/onboarding).
 
 ## Features
 
 - Type hints with a `py.typed` marker (PEP 561); resource responses are dictionaries
-- Automatic retry with exponential backoff (429s and 5xx)
-- Typed errors (`AuthenticationError`, `RateLimitError`, `ValidationError`, `NotFoundError`)
+- Automatic retry on `429` and `5xx` responses: up to 3 retries, with 1 s, 2 s, and 4 s backoff
+- Typed errors: `AuthenticationError`, `RateLimitError`, `ValidationError`, `NotFoundError`
 - API key and OAuth2 Bearer token authentication
-- Context manager support for clean connection handling
-- Safety types prominently surfaced (`not_instructions` documented)
+- Context manager and `close()` for connection cleanup
+- `safety` object with `not_instructions` on every prescription
+
+## Configuration
+
+```python
+from saturday import Saturday
+
+client = Saturday(
+    api_key="sk_test_...",
+    base_url="https://api.saturday.fit",  # default
+    timeout=30.0,  # seconds, per connect, read, and write; default 30
+    max_retries=3,  # default; 0 disables retries
+)
+client.close()
+```
 
 ## Authentication
 
 ```python
-# API key (server-to-server)
+# Partner API key (server-to-server)
 client = Saturday(api_key="sk_live_...")
 
-# OAuth2 Bearer token (athlete-delegated access)
+# OAuth2 Bearer token (athlete-delegated access); it takes precedence over the API key
 client = Saturday(api_key="sk_live_...", bearer_token="eyJ...")
+
+# Coach API key, for the coach resource
+client = Saturday(api_key="cp_live_...")
 
 # Context manager for automatic cleanup
 with Saturday(api_key="sk_live_...") as client:
     rx = client.nutrition.calculate(activity_type="run", duration_min=60)
 ```
 
-## Error Handling
+Partner keys carry the `sk_live_` or `sk_test_` prefix; coach keys carry `cp_live_` or `cp_test_`.
+
+## Error handling
 
 ```python
 from saturday import Saturday, RateLimitError, ValidationError, NotFoundError
@@ -81,23 +100,27 @@ except NotFoundError:
     print("Resource not found")
 ```
 
+`retry_after` is the server's `Retry-After` value in seconds, or 60 when the response carries none.
+
 ## Resources
 
 | Resource | Description |
 |----------|-------------|
 | `client.nutrition` | Calculate prescriptions, batch calculate |
-| `client.athletes` | Athlete CRUD, settings, batch create, GDPR export |
+| `client.athletes` | Athlete CRUD, settings, batch create, GDPR data export |
 | `client.activities` | Activity CRUD, prescription calculation, feedback |
-| `client.products` | Product search, barcode lookup, curated list |
-| `client.ai` | Conversation metadata and history; see AI writes below |
+| `client.products` | Product search, barcode lookup, curated list, categories |
+| `client.ai` | Conversation metadata, history, listing, and deletion; see AI conversations below |
 | `client.webhooks` | Webhook registration and management |
-| `client.organizations` | Team/org management with members |
+| `client.organizations` | Team and organization management with members |
 | `client.gear` | Athlete gear inventory |
 | `client.knowledge` | Sports nutrition knowledge base search |
+| `client.onboarding` | The versioned onboarding question schema, for collecting an athlete's profile in your UI |
+| `client.coach` | Roster fueling reads and the coach's alert and report configuration, with a coach key |
 
-## AI writes
+## AI conversations
 
-`ai.create_conversation()` and `ai.send_message()` currently do not support the API's server-sent event (SSE) responses. Conversation creation also uses an outdated request field. Use direct HTTP for these two operations while [streaming support is being aligned](https://github.com/SaturdayInc/saturday-node/issues/12). The metadata and history read methods use JSON.
+`POST /v1/ai/conversations` and `POST /v1/ai/conversations/{conversation_id}/messages` answer with a server-sent event (SSE) stream. Call them over HTTP directly; the SDK's `ai` resource covers the JSON reads: conversation metadata, message history, listing, and deletion.
 
 For a partner with AI access enabled, this request starts a conversation and prints the complete event stream, including safety warnings and errors:
 
@@ -108,11 +131,11 @@ curl --no-buffer --fail-with-body https://api.saturday.fit/v1/ai/conversations \
   -d '{"athlete_id":"YOUR_ATHLETE_ID","message":"Help me review my fueling plan"}'
 ```
 
-The first `message_start` event supplies `conversation_id`. Send subsequent messages to `POST /v1/ai/conversations/{conversation_id}/messages` with a `message` field and consume the same SSE format. Do not parse a successful stream as JSON or discard `safety_warning` and `error` events.
+The first `message_start` event supplies `conversation_id`. Send later messages to `POST /v1/ai/conversations/{conversation_id}/messages` with a `message` field and read the same SSE format. Do not parse a successful stream as JSON, and do not discard `safety_warning` and `error` events.
 
 ## Documentation
 
-Full API documentation: [docs.saturday.fit](https://docs.saturday.fit)
+Full API reference: [docs.saturday.fit](https://docs.saturday.fit)
 
 ## Requirements
 
