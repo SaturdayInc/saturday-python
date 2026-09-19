@@ -9,11 +9,13 @@ nutrition response for AI consumers.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, AsyncContextManager, AsyncIterator, Dict, List, Optional, Sequence, Union
+from urllib.parse import quote
 
 import httpx
 
 from saturday.errors import RateLimitError, SaturdayError
+from saturday.ai_stream import AIStreamError, AIStreamEvent, stream_ai
 from saturday.types import (
     Activity,
     ActivityFeedback,
@@ -388,18 +390,25 @@ class _AIResource:
         self._client = client
 
     def create_conversation(self, athlete_id: str, initial_message: Optional[str] = None) -> Dict[str, Any]:
-        """Unsupported SSE response. Use direct HTTP; see saturday-python issue #10."""
-        body: Dict[str, Any] = {"athlete_id": athlete_id}
-        if initial_message:
-            body["initial_message"] = initial_message
-        return self._client.request("POST", "/v1/ai/conversations", json=body)
+        """Deprecated: use async create_conversation_stream; sends no request."""
+        raise AIStreamError("streaming_required", "Use async with ai.create_conversation_stream(athlete_id, message) and consume every event. No request was sent.")
 
     def send_message(self, conv_id: str, message: str) -> Dict[str, Any]:
-        """Unsupported SSE response. Use direct HTTP; see saturday-python issue #10."""
-        return self._client.request("POST", f"/v1/ai/conversations/{conv_id}/messages", json={"message": message})
+        """Deprecated: use async send_message_stream; sends no request."""
+        raise AIStreamError("streaming_required", "Use async with ai.send_message_stream(conv_id, message) and consume every event. No request was sent.")
+
+    def create_conversation_stream(self, athlete_id: str, message: str, *, timeout: Optional[float] = None) -> AsyncContextManager[AsyncIterator[AIStreamEvent]]:
+        """Async context manager for a single-attempt AI POST with a total deadline."""
+        return stream_ai(self._client._base_url, dict(self._client._client.headers), "/v1/ai/conversations",
+                         {"athlete_id": athlete_id, "message": message}, self._client._timeout if timeout is None else timeout)
+
+    def send_message_stream(self, conv_id: str, message: str, *, timeout: Optional[float] = None) -> AsyncContextManager[AsyncIterator[AIStreamEvent]]:
+        """Async context manager preserving all events, including errors and warnings."""
+        return stream_ai(self._client._base_url, dict(self._client._client.headers), f"/v1/ai/conversations/{quote(conv_id, safe='')}/messages",
+                         {"message": message}, self._client._timeout if timeout is None else timeout)
 
     def get_messages(self, conv_id: str, *, limit: int = 50) -> Dict[str, Any]:
-        """Get conversation history."""
+        """Get stored JSON history; the server ignores the legacy limit argument."""
         return self._client.request("GET", f"/v1/ai/conversations/{conv_id}/messages", params={"limit": limit})
 
     def get_conversation(self, conv_id: str) -> Dict[str, Any]:
