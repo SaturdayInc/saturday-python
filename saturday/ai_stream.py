@@ -1,0 +1,204 @@
+"""Single-attempt, context-managed AI event streams."""
+
+from __future__ import annotations
+
+import asyncio
+import codecs
+import json
+import math
+from contextlib import asynccontextmanager, suppress
+from typing import Any, AsyncIterator, Dict, Iterator, Optional, TypedDict
+
+import httpx
+
+from saturday.errors import RateLimitError, SaturdayError
+
+
+class _AIStreamEventRequired(TypedDict):
+    event: str
+    data: Any
+    raw_data: str
+
+
+class AIStreamEvent(_AIStreamEventRequired, total=False):
+    id: str
+
+
+class AIStreamError(SaturdayError):
+    def __init__(self, code: str, message: str, event: Optional[AIStreamEvent] = None):
+        super().__init__(message=message, code=code)
+        self.event = event
+
+
+class _EventParser:
+    def __init__(self) -> None:
+        self.line = ""
+        self.skip_lf = False
+        self.name = ""
+        self.data = []
+        self.event_id = None
+
+    def push(self, text: str) -> Iterator[AIStreamEvent]:
+        for char in text:
+            if self.skip_lf:
+                self.skip_lf = False
+                if char == "\n":
+                    continue
+            if char not in ("\r", "\n"):
+                self.line += char
+                continue
+            self.skip_lf = char == "\r"
+            line, self.line = self.line, ""
+            if not line:
+                if self.data:
+                    raw = "\n".join(self.data)
+                    event: AIStreamEvent = {"event": self.name or "message", "data": None, "raw_data": raw}
+                    if self.event_id is not None:
+                        event["id"] = self.event_id
+                    try:
+                        event["data"] = json.loads(raw, parse_constant=self.invalid_constant)
+                    except ValueError as exc:
+                        raise AIStreamError("malformed_stream", "AI event contains invalid JSON. The request was not replayed.", event) from exc
+                    self.data, self.name = [], ""
+                    yield event
+                else:
+                    self.name = ""
+                continue
+            if line.startswith(":"):
+                continue
+            field, _, value = line.partition(":")
+            if value.startswith(" "):
+                value = value[1:]
+            if field == "event":
+                self.name = value
+            elif field == "data":
+                self.data.append(value)
+            elif field == "id" and "\0" not in value:
+                self.event_id = value
+            # SSE retry fields do not authorize another inference request.
+
+    @staticmethod
+    def invalid_constant(value: str) -> None:
+        raise ValueError("Non-JSON constant: " + value)
+
+    def finish(self) -> None:
+        if self.data or self.name or (self.line and not self.line.startswith(":")):
+            raise AIStreamError("incomplete_stream", "AI stream ended inside an event. The request was not replayed.")
+
+
+@asynccontextmanager
+async def stream_ai(
+    base_url: str,
+    headers: Dict[str, str],
+    path: str,
+    body: Dict[str, Any],
+    timeout: float,
+) -> AsyncIterator[AsyncIterator[AIStreamEvent]]:
+    """A total deadline covers acquisition, headers and body; never retries POST."""
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("AI stream timeout must be a positive finite number.")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+
+    def check_deadline() -> float:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise AIStreamError("timeout", "AI stream deadline exceeded. The request may have been accepted; it was not replayed.")
+        return remaining
+
+    async def within(operation):
+        remaining = check_deadline()
+        try:
+            return await asyncio.wait_for(operation(), remaining)
+        except (asyncio.TimeoutError, httpx.TimeoutException) as exc:
+            raise AIStreamError("timeout", "AI stream deadline exceeded. The request may have been accepted; it was not replayed.") from exc
+        except httpx.HTTPError as exc:
+            check_deadline()
+            raise AIStreamError("connection_error", "AI stream connection failed. The request may have been accepted; it was not replayed.") from exc
+
+    stream_headers = httpx.Headers(headers)
+    stream_headers["Accept"] = "text/event-stream"
+    async with httpx.AsyncClient(base_url=base_url, headers=stream_headers, timeout=timeout, follow_redirects=False) as client:
+        response = None
+        expiration = None
+        events = None
+        try:
+            request = client.build_request("POST", path, json=body)
+            response = await within(lambda: client.send(request, stream=True))
+            if response.is_redirect:
+                raise AIStreamError("redirect", "AI request was redirected. It was not forwarded or replayed.")
+            if not response.is_success:
+                await within(response.aread)
+                try:
+                    detail = response.json()
+                    detail = detail.get("error", detail) if isinstance(detail, dict) else None
+                except ValueError:
+                    detail = None
+                if not isinstance(detail, dict) or not isinstance(detail.get("message"), str):
+                    detail = {"code": "unknown", "message": "AI request failed without a structured error message."}
+                error = SaturdayError.from_response(response.status_code, detail)
+                if isinstance(error, RateLimitError):
+                    try:
+                        error.retry_after = max(0, int(response.headers.get("Retry-After", "60")))
+                    except ValueError:
+                        pass
+                raise error
+            if response.headers.get("Content-Type", "").split(";")[0].strip().lower() != "text/event-stream":
+                raise AIStreamError("invalid_stream_response", "Expected an AI text/event-stream response. The request was not replayed.")
+
+            async def expire() -> None:
+                await asyncio.sleep(max(0, deadline - loop.time()))
+                await response.aclose()
+
+            expiration = asyncio.create_task(expire())
+
+            async def read_events() -> AsyncIterator[AIStreamEvent]:
+                decoder = codecs.getincrementaldecoder("utf-8-sig")("strict")
+                parser = _EventParser()
+                chunks = response.aiter_bytes().__aiter__()
+                ended = False
+                conversation_id = None
+                server_error = None
+                while True:
+                    done = False
+                    try:
+                        chunk = await within(chunks.__anext__)
+                    except StopAsyncIteration:
+                        chunk, done = b"", True
+                    try:
+                        text = decoder.decode(chunk, final=done)
+                    except UnicodeError as exc:
+                        raise AIStreamError("malformed_stream", "AI stream contains invalid or incomplete UTF-8. The request was not replayed.") from exc
+                    for event in parser.push(text):
+                        check_deadline()
+                        if event["event"] in ("message_start", "message_end"):
+                            event_id = event["data"].get("conversation_id") if isinstance(event["data"], dict) else None
+                            if not isinstance(event_id, str) or not event_id or (event["event"] == "message_end" and event_id != conversation_id):
+                                raise AIStreamError("malformed_stream", "AI stream has an invalid conversation boundary. The request was not replayed.", event)
+                            if event["event"] == "message_start":
+                                conversation_id = event_id
+                        if event["event"] == "error":
+                            server_error = event
+                        if event["event"] == "message_end":
+                            ended = True
+                        yield event
+                    if done:
+                        break
+                check_deadline()
+                if server_error:
+                    raise AIStreamError("stream_error", "The AI server reported an error. Inspect the preserved event; the request was not replayed.", server_error)
+                parser.finish()
+                if not ended:
+                    raise AIStreamError("incomplete_stream", "AI stream ended without message_end. The request was not replayed.")
+
+            events = read_events()
+            yield events
+        finally:
+            if expiration is not None:
+                expiration.cancel()
+                with suppress(asyncio.CancelledError, httpx.HTTPError):
+                    await expiration
+            if events is not None:
+                await events.aclose()
+            if response is not None:
+                await response.aclose()

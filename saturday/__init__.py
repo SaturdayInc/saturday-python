@@ -25,6 +25,7 @@ Example::
 """
 
 from saturday.client import SDK_VERSION, Saturday
+from saturday.ai_stream import AIStreamError, AIStreamEvent
 from saturday.errors import (
     SaturdayError,
     AuthenticationError,
@@ -36,6 +37,8 @@ from saturday.errors import (
 __version__ = SDK_VERSION
 __all__ = [
     "Saturday",
+    "AIStreamError",
+    "AIStreamEvent",
     "SaturdayError",
     "AuthenticationError",
     "RateLimitError",
