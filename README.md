@@ -150,7 +150,7 @@ Athlete settings use flat concern flags, such as `sweat_level=5, gut_distress=Tr
 
 ## AI writes
 
-Use `ai.create_conversation_stream(athlete_id, message)` and `ai.send_message_stream(conversation_id, message)` with `async with`, then `async for`. These additive methods are asynchronous, even though the existing JSON SDK methods remain synchronous. Events are dictionaries with `event`, `data`, `raw_data` and optional `id`, preserving unknown event names and JSON fields.
+Use `ai.create_conversation_stream(athlete_id, message)` and `ai.send_message_stream(conversation_id, message)` with `async with`, then `async for`. These additive methods are asynchronous, even though the existing JSON SDK methods remain synchronous. Events are dictionaries with `event`, `data`, `raw_data` and optional `id`, preserving unknown event names and JSON fields. `id` is present only when the server sent an SSE `id:` line for that event; the server sends none today.
 
 Compatibility change: the legacy `ai.create_conversation()` and `ai.send_message()` methods now raise `AIStreamError` with code `streaming_required` locally, before any HTTP request. Migrate to the stream methods. The server never returned their promised JSON objects; the SDK does not invent metadata or timestamps to imitate them.
 
@@ -162,14 +162,14 @@ async def main():
     with Saturday(api_key="sk_live_...") as client:
         try:
             async with client.ai.create_conversation_stream(
-                "YOUR_ATHLETE_ID", "Help me review my fueling plan", timeout=30.0
+                "YOUR_ATHLETE_ID", "Help me review my fueling plan", timeout=60.0
             ) as events:
                 async for event in events:
                     # Keep warnings, errors and unknown events, not only text.
                     print(event["event"], event["data"])
         except AIStreamError as error:
             print(error.code, error.event)
-            raise  # No automatic retry: the write may already be accepted.
+            raise  # No automatic retry: the server may have accepted the write.
 
 asyncio.run(main())
 ```
@@ -178,7 +178,7 @@ The `message_start` event supplies `data["conversation_id"]`. Current names incl
 
 AI stream writes never automatically retry, including HTTP 429/5xx, connection errors, malformed JSON/UTF-8 (`malformed_stream`), cancellation and premature EOF (`incomplete_stream`). `max_retries` does not apply. Preserve received events as partial output, not a complete answer. Inspect conversation state before deliberately submitting another message; these writes have no idempotency key.
 
-The stream timeout is a total deadline in seconds covering acquisition, headers and the body, defaulting to the client's timeout. This is stronger than the inactivity timeout of ordinary synchronous HTTPX requests. Cancel the consuming asyncio task to interrupt a blocked read; `asyncio.CancelledError` propagates after cleanup. Exiting `async with`, including after a loop `break`, closes the response and its async HTTP client. Each stream owns these resources. Cancellation cannot undo accepted inference, and an SSE `retry` or `replay` does not repeat the POST. Python 3.9+ is supported; no new runtime dependency is required.
+The stream timeout is a total deadline in seconds covering acquisition, headers and the body. It defaults to the client `timeout` when one is configured, else 60 s: a turn with tool calls can run up to the API's 60 s request cap. This is stronger than the inactivity timeout of ordinary synchronous HTTPX requests. Cancel the consuming asyncio task to interrupt a blocked read; `asyncio.CancelledError` propagates after cleanup. Exiting `async with`, including after a loop `break`, closes the response and its async HTTP client. Each stream owns these resources. Cancellation cannot undo accepted inference, and an SSE `retry` or `replay` does not repeat the POST.
 
 Redirects are refused with `AIStreamError` code `redirect`, so the SDK never forwards the POST to another URL. Connection failures use `connection_error`; HTTP failures retain the usual typed Saturday errors and parsed server details.
 

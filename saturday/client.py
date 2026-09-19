@@ -32,9 +32,11 @@ from saturday.types import (
     StoredPrescriptionResponse,
 )
 
-SDK_VERSION = "0.6.0"
+SDK_VERSION = "0.6.1"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
 DEFAULT_TIMEOUT = 30.0
+# AI turns run up to the API's 60 s request cap, so an unconfigured stream deadline is longer than the JSON default.
+DEFAULT_STREAM_TIMEOUT = 60.0
 DEFAULT_MAX_RETRIES = 3
 
 
@@ -45,7 +47,7 @@ class Saturday:
     Args:
         api_key: Your partner API key (sk_live_... or sk_test_...).
         base_url: Base URL override. Defaults to https://api.saturday.fit.
-        timeout: Request timeout in seconds. Defaults to 30.
+        timeout: Request timeout in seconds. Defaults to 30 for JSON requests and 60 for AI streams; an explicit value applies to both.
         max_retries: Maximum retry attempts for transient failures. Defaults to 3.
         bearer_token: OAuth2 Bearer token (alternative to API key).
 
@@ -64,13 +66,14 @@ class Saturday:
         api_key: str,
         *,
         base_url: str = DEFAULT_BASE_URL,
-        timeout: float = DEFAULT_TIMEOUT,
+        timeout: Optional[float] = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
         bearer_token: Optional[str] = None,
     ):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
-        self._timeout = timeout
+        self._timeout = DEFAULT_TIMEOUT if timeout is None else timeout
+        self._stream_timeout = DEFAULT_STREAM_TIMEOUT if timeout is None else timeout
         self._max_retries = max_retries
         self._bearer_token = bearer_token
 
@@ -87,7 +90,7 @@ class Saturday:
         self._client = httpx.Client(
             base_url=self._base_url,
             headers=headers,
-            timeout=timeout,
+            timeout=self._timeout,
         )
 
         # Resource accessors
@@ -398,14 +401,14 @@ class _AIResource:
         raise AIStreamError("streaming_required", "Use async with ai.send_message_stream(conv_id, message) and consume every event. No request was sent.")
 
     def create_conversation_stream(self, athlete_id: str, message: str, *, timeout: Optional[float] = None) -> AsyncContextManager[AsyncIterator[AIStreamEvent]]:
-        """Async context manager for a single-attempt AI POST with a total deadline."""
+        """Async context manager for a single-attempt AI POST with a total deadline: the client timeout, else 60 s."""
         return stream_ai(self._client._base_url, dict(self._client._client.headers), "/v1/ai/conversations",
-                         {"athlete_id": athlete_id, "message": message}, self._client._timeout if timeout is None else timeout)
+                         {"athlete_id": athlete_id, "message": message}, self._client._stream_timeout if timeout is None else timeout)
 
     def send_message_stream(self, conv_id: str, message: str, *, timeout: Optional[float] = None) -> AsyncContextManager[AsyncIterator[AIStreamEvent]]:
-        """Async context manager preserving all events, including errors and warnings."""
+        """Async context manager preserving all events, including errors and warnings; the deadline is the client timeout, else 60 s."""
         return stream_ai(self._client._base_url, dict(self._client._client.headers), f"/v1/ai/conversations/{quote(conv_id, safe='')}/messages",
-                         {"message": message}, self._client._timeout if timeout is None else timeout)
+                         {"message": message}, self._client._stream_timeout if timeout is None else timeout)
 
     def get_messages(self, conv_id: str, *, limit: int = 50) -> Dict[str, Any]:
         """Get stored JSON history; the server ignores the legacy limit argument."""
