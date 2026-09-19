@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from saturday.errors import SaturdayError
+from saturday.errors import RateLimitError, SaturdayError
 
 SDK_VERSION = "0.5.0"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
@@ -103,6 +103,7 @@ class Saturday:
         *,
         json: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
+        raw: bool = False,
     ) -> Any:
         """Make an authenticated API request with automatic retry on 429/5xx."""
         last_error: Optional[SaturdayError] = None
@@ -123,6 +124,8 @@ class Saturday:
                 if response.is_success:
                     if response.status_code == 204:
                         return None
+                    if raw:
+                        return response.content
                     return response.json()
 
                 # Parse error
@@ -132,6 +135,11 @@ class Saturday:
                     error_body = {"error": {"type": "api_error", "code": "unknown", "message": response.text}}
 
                 error = SaturdayError.from_response(response.status_code, error_body)
+                if isinstance(error, RateLimitError):
+                    try:
+                        error.retry_after = max(0, int(response.headers.get("Retry-After", "60")))
+                    except ValueError:
+                        pass
                 last_error = error
 
                 # Only retry on rate limit or server errors
@@ -187,7 +195,7 @@ class _OnboardingResource:
         if not p["profile_complete"]:
             for f in p["missing_fields"]:        # sorted most-impactful-first
                 print(f["field"], f["band_impact"])
-            invite_url = p["onboarding"]["url"]  # hosted onboarding page
+            invite_url = p.get("onboarding", {}).get("url")  # athlete-scoped requests only
 
     **Attribution is required** when you render these questions in your UI — the
     schema response carries the ``attribution`` object, same contract as
@@ -351,14 +359,14 @@ class _AIResource:
         self._client = client
 
     def create_conversation(self, athlete_id: str, initial_message: Optional[str] = None) -> Dict[str, Any]:
-        """Start a new AI coaching conversation for an athlete."""
+        """Unsupported SSE response. Use direct HTTP; see saturday-node issue #12."""
         body: Dict[str, Any] = {"athlete_id": athlete_id}
         if initial_message:
             body["initial_message"] = initial_message
         return self._client.request("POST", "/v1/ai/conversations", json=body)
 
     def send_message(self, conv_id: str, message: str) -> Dict[str, Any]:
-        """Send a message and receive the AI response."""
+        """Unsupported SSE response. Use direct HTTP; see saturday-node issue #12."""
         return self._client.request("POST", f"/v1/ai/conversations/{conv_id}/messages", json={"message": message})
 
     def get_messages(self, conv_id: str, *, limit: int = 50) -> Dict[str, Any]:
@@ -549,13 +557,9 @@ class _CoachResource:
         """The report as a downloadable PDF (returns the raw bytes)."""
         params = _coach_read_params(window, focus) or {}
         params["format"] = "pdf"
-        # The shared request() returns parsed JSON; for the binary PDF we hit the
-        # underlying httpx client directly so the bytes come back intact.
-        resp = self._client._client.get(
-            f"/v1/coach/athletes/{athlete_uid}/report", params=params
+        return self._client.request(
+            "GET", f"/v1/coach/athletes/{athlete_uid}/report", params=params, raw=True
         )
-        resp.raise_for_status()
-        return resp.content
 
     def session_detail(self, athlete_uid: str, activity_id: str) -> Dict[str, Any]:
         """Drill into one session by activity id (planned-vs-actual + markers)."""

@@ -29,16 +29,21 @@ prescription = client.nutrition.calculate(
     is_race=True,
 )
 
-# Safety metadata is ALWAYS included — athlete safety is never paywalled
+# Safety metadata is included on every tier.
 print(prescription["safety"]["warnings"])
-print(f"Carbs: {prescription['carb_g_per_hr']} g/hr")
-print(f"Sodium: {prescription['sodium_mg_per_hr']} mg/hr")
-print(f"Fluid: {prescription['fluid_ml_per_hr']} mL/hr")
+carbs = prescription.get("carb_range_g_per_hr", prescription.get("carb_g_per_hr", 0))
+sodium = prescription.get("sodium_range_mg_per_hr", prescription.get("sodium_mg_per_hr", 0))
+fluid = prescription.get("fluid_range_ml_per_hr", prescription.get("fluid_ml_per_hr", 0))
+print(f"Carbs: {carbs} g/hr")
+print(f"Sodium: {sodium} mg/hr")
+print(f"Fluid: {fluid} mL/hr")
 ```
+
+Teaser responses and incomplete profiles return ranges. A `full` tier alone does not guarantee exact numbers. Exact zero values may be omitted from the response, so the example displays them as `0`. See [Athlete Onboarding](https://docs.saturday.fit/guides/onboarding).
 
 ## Features
 
-- Fully typed with `py.typed` marker (PEP 561)
+- Type hints with a `py.typed` marker (PEP 561); resource responses are dictionaries
 - Automatic retry with exponential backoff (429s and 5xx)
 - Typed errors (`AuthenticationError`, `RateLimitError`, `ValidationError`, `NotFoundError`)
 - API key and OAuth2 Bearer token authentication
@@ -84,11 +89,26 @@ except NotFoundError:
 | `client.athletes` | Athlete CRUD, settings, batch create, GDPR export |
 | `client.activities` | Activity CRUD, prescription calculation, feedback |
 | `client.products` | Product search, barcode lookup, curated list |
-| `client.ai` | AI coaching conversations |
+| `client.ai` | Conversation metadata and history; see AI writes below |
 | `client.webhooks` | Webhook registration and management |
 | `client.organizations` | Team/org management with members |
 | `client.gear` | Athlete gear inventory |
 | `client.knowledge` | Sports nutrition knowledge base search |
+
+## AI writes
+
+`ai.create_conversation()` and `ai.send_message()` currently do not support the API's server-sent event (SSE) responses. Conversation creation also uses an outdated request field. Use direct HTTP for these two operations while [streaming support is being aligned](https://github.com/SaturdayInc/saturday-node/issues/12). The metadata and history read methods use JSON.
+
+For a partner with AI access enabled, this request starts a conversation and prints the complete event stream, including safety warnings and errors:
+
+```bash
+curl --no-buffer --fail-with-body https://api.saturday.fit/v1/ai/conversations \
+  -H "Authorization: Bearer $SATURDAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"athlete_id":"YOUR_ATHLETE_ID","message":"Help me review my fueling plan"}'
+```
+
+The first `message_start` event supplies `conversation_id`. Send subsequent messages to `POST /v1/ai/conversations/{conversation_id}/messages` with a `message` field and consume the same SSE format. Do not parse a successful stream as JSON or discard `safety_warning` and `error` events.
 
 ## Documentation
 
