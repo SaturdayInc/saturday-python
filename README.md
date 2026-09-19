@@ -116,7 +116,7 @@ except NotFoundError:
 | `client.gear` | Athlete gear inventory |
 | `client.knowledge` | Sports nutrition knowledge base search |
 | `client.onboarding` | The versioned onboarding question schema, for collecting an athlete's profile in your UI |
-| `client.coach` | Roster fueling reads, the coach's alert and report configuration, and coach webhooks, with a coach key |
+| `client.coach` | Roster fueling reads, the coach's alert and report configuration, coach webhooks, and read-only billing (`seat_state`, `ledger`, `tier_status`, `connect_summary`, `connect_earnings`, `connect_transactions`, `connect_arrangements`; the key must carry `billing:read`), with a coach key |
 
 ## Prescription and batch responses
 

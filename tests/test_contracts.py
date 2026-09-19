@@ -25,6 +25,13 @@ MODELS = {
     "athletes_partial": "BatchAthleteResponse", "athletes_all_failed": "BatchAthleteResponse",
     "import_plain": "ActivityImportResponse", "import_calculated": "ActivityImportResponse",
     "import_calc_failed": "ActivityImportResponse", "import_all_failed": "ActivityImportResponse",
+    "billing_seat_state": "CoachSeatState", "billing_seat_state_pro": "CoachSeatState",
+    "billing_ledger_page": "CoachLedgerPage", "billing_ledger_empty": "CoachLedgerPage",
+    "billing_tier_status": "CoachTierStatus", "billing_tier_status_empty": "CoachTierStatus",
+    "billing_connect_summary": "CoachConnectSummary", "billing_connect_summary_none": "CoachConnectSummary",
+    "billing_connect_earnings": "CoachConnectEarnings", "billing_connect_earnings_empty": "CoachConnectEarnings",
+    "billing_connect_transactions": "CoachConnectChargesPage", "billing_connect_transactions_end": "CoachConnectChargesPage",
+    "billing_connect_arrangements": "CoachConnectArrangements",
 }
 
 
@@ -159,3 +166,32 @@ def test_flat_settings_payload_and_raw_return_are_preserved(name):
     assert type(result) is dict
     assert result == payload
     assert methods == ["GET", "PATCH"]
+
+
+@pytest.mark.parametrize("name, method, kwargs, path, query", [
+    ("billing_seat_state", "seat_state", {}, "/v1/coach/billing/seat-state", {}),
+    ("billing_seat_state", "seat_state", {"org_id": "org_1"}, "/v1/coach/billing/seat-state", {"org_id": "org_1"}),
+    ("billing_ledger_page", "ledger", {"view": "inflows", "limit": 50, "cursor": "1749480000000"}, "/v1/coach/billing/ledger", {"view": "inflows", "limit": "50", "cursor": "1749480000000"}),
+    ("billing_ledger_empty", "ledger", {}, "/v1/coach/billing/ledger", {}),
+    ("billing_tier_status", "tier_status", {}, "/v1/coach/billing/tier-status", {}),
+    ("billing_connect_summary_none", "connect_summary", {}, "/v1/coach/billing/connect/summary", {}),
+    ("billing_connect_earnings", "connect_earnings", {}, "/v1/coach/billing/connect/earnings", {}),
+    ("billing_connect_transactions", "connect_transactions", {"limit": 20, "cursor": "1749480000000"}, "/v1/coach/billing/connect/transactions", {"limit": "20", "cursor": "1749480000000"}),
+    ("billing_connect_arrangements", "connect_arrangements", {}, "/v1/coach/billing/connect/arrangements", {}),
+])
+def test_coach_billing_reads_are_gets_that_keep_the_raw_payload(name, method, kwargs, path, query):
+    payload = {**FIXTURES[name], "future_field": True}
+
+    def send(request):
+        assert request.method == "GET"
+        assert request.url.path == path
+        assert dict(request.url.params) == query
+        return httpx.Response(200, json=payload)
+
+    client = Saturday(api_key="cp_test_fixture", max_retries=0)
+    client._client.close()
+    client._client = httpx.Client(base_url=client._base_url, transport=httpx.MockTransport(send))
+    with client:
+        result = getattr(client.coach, method)(**kwargs)
+    assert type(result) is dict
+    assert result == payload
