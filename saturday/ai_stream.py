@@ -22,6 +22,8 @@ class _AIStreamEventRequired(TypedDict):
 
 
 class AIStreamEvent(_AIStreamEventRequired, total=False):
+    """`id` is present only when the event's block carried an SSE `id:` line; not a reconnect buffer. The server sends none today."""
+
     id: str
 
 
@@ -51,19 +53,19 @@ class _EventParser:
             self.skip_lf = char == "\r"
             line, self.line = self.line, ""
             if not line:
-                if self.data:
-                    raw = "\n".join(self.data)
-                    event: AIStreamEvent = {"event": self.name or "message", "data": None, "raw_data": raw}
-                    if self.event_id is not None:
-                        event["id"] = self.event_id
+                # An id line belongs to the event dispatched by its own block, never to later events.
+                name, data, event_id = self.name, self.data, self.event_id
+                self.name, self.data, self.event_id = "", [], None
+                if data:
+                    raw = "\n".join(data)
+                    event: AIStreamEvent = {"event": name or "message", "data": None, "raw_data": raw}
+                    if event_id is not None:
+                        event["id"] = event_id
                     try:
                         event["data"] = json.loads(raw, parse_constant=self.invalid_constant)
                     except ValueError as exc:
                         raise AIStreamError("malformed_stream", "AI event contains invalid JSON. The request was not replayed.", event) from exc
-                    self.data, self.name = [], ""
                     yield event
-                else:
-                    self.name = ""
                 continue
             if line.startswith(":"):
                 continue

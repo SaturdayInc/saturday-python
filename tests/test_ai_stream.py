@@ -51,6 +51,35 @@ async def collect(context):
         return [event async for event in stream]
 
 
+def test_id_is_per_event(monkeypatch):
+    data = START + "id: 7\n" + frame("text_delta", {"delta": "a"}) + frame("text_delta", {"delta": "b"}) + END
+    requests, chunks = install(monkeypatch, data.encode())
+    with Saturday(api_key="placeholder") as client:
+        events = asyncio.run(collect(client.ai.send_message_stream("conv", "hello")))
+    assert [event.get("id") for event in events] == [None, "7", None, None]
+    assert len(requests) == 1 and chunks.closed
+
+
+def test_stream_deadline_defaults_to_60s_unless_configured(monkeypatch):
+    timeouts = []
+    original = httpx.AsyncClient
+
+    async def respond(request):
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, stream=Chunks((START + END).encode()))
+
+    def record(**kwargs):
+        timeouts.append(kwargs["timeout"])
+        return original(**kwargs, transport=httpx.MockTransport(respond))
+
+    monkeypatch.setattr(httpx, "AsyncClient", record)
+    with Saturday(api_key="placeholder") as client:
+        asyncio.run(collect(client.ai.create_conversation_stream("athlete", "hello")))
+    with Saturday(api_key="placeholder", timeout=5.0) as client:
+        asyncio.run(collect(client.ai.send_message_stream("conv", "hello")))
+        asyncio.run(collect(client.ai.send_message_stream("conv", "hello", timeout=12.5)))
+    assert timeouts == [60.0, 5.0, 12.5]
+
+
 @pytest.mark.parametrize("method", ["create_conversation", "send_message"])
 def test_legacy_rejects_without_request(method):
     requests = []

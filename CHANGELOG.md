@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1
+
+- An AI stream deadline defaults to 60 s, matching the API's request cap, when the client has no `timeout` configured. An explicit client `timeout` or per-call `timeout` still applies.
+- AI stream events carry `id` only when that event's block included an SSE `id:` line, instead of repeating the last id seen.
+
 ## 0.6.0
 
 - Add async context-managed `ai.create_conversation_stream` and `ai.send_message_stream` for the existing SSE API. Preserve warnings, errors and unknown events; provide total deadlines, asyncio cancellation and early-exit cleanup. AI writes never automatically retry.
