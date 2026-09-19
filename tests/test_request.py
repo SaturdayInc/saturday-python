@@ -76,6 +76,17 @@ def test_rate_limit_preserves_retry_after(make_client):
     assert raised.value.retry_after == 17
 
 
+@pytest.mark.parametrize("header, expected", [(None, 60), ("invalid", 60), ("-1", 0)])
+def test_rate_limit_retry_after_fallback(make_client, header, expected):
+    headers = {} if header is None else {"Retry-After": header}
+    client = make_client(lambda _: httpx.Response(429, json={
+        "error": {"message": "Slow down"},
+    }, headers=headers), max_retries=0)
+    with pytest.raises(RateLimitError) as raised:
+        client.onboarding.questions()
+    assert raised.value.retry_after == expected
+
+
 def test_empty_response(make_client):
     client = make_client(lambda _: httpx.Response(204))
     assert client.athletes.delete("athlete_123") is None
