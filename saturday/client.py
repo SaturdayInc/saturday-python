@@ -15,7 +15,7 @@ import httpx
 
 from saturday.errors import RateLimitError, SaturdayError
 
-SDK_VERSION = "0.5.0"
+SDK_VERSION = "0.6.0"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 3
@@ -359,14 +359,14 @@ class _AIResource:
         self._client = client
 
     def create_conversation(self, athlete_id: str, initial_message: Optional[str] = None) -> Dict[str, Any]:
-        """Unsupported SSE response. Use direct HTTP; see saturday-node issue #12."""
+        """Unsupported SSE response. Use direct HTTP; see saturday-python issue #10."""
         body: Dict[str, Any] = {"athlete_id": athlete_id}
         if initial_message:
             body["initial_message"] = initial_message
         return self._client.request("POST", "/v1/ai/conversations", json=body)
 
     def send_message(self, conv_id: str, message: str) -> Dict[str, Any]:
-        """Unsupported SSE response. Use direct HTTP; see saturday-node issue #12."""
+        """Unsupported SSE response. Use direct HTTP; see saturday-python issue #10."""
         return self._client.request("POST", f"/v1/ai/conversations/{conv_id}/messages", json={"message": message})
 
     def get_messages(self, conv_id: str, *, limit: int = 50) -> Dict[str, Any]:
