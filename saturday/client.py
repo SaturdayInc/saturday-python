@@ -9,11 +9,28 @@ nutrition response for AI consumers.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncContextManager, AsyncIterator, Dict, List, Optional, Sequence, Union
+from urllib.parse import quote
 
 import httpx
 
 from saturday.errors import RateLimitError, SaturdayError
+from saturday.ai_stream import AIStreamError, AIStreamEvent, stream_ai
+from saturday.types import (
+    Activity,
+    ActivityFeedback,
+    ActivityImportResponse,
+    ActivityListResponse,
+    Athlete,
+    AthleteListResponse,
+    AthleteSettings,
+    BatchAthleteResponse,
+    BatchCalculateResponse,
+    ImportActivityRequest,
+    NutritionCalculateResponse,
+    PrescriptionEnvelope,
+    StoredPrescriptionResponse,
+)
 
 SDK_VERSION = "0.6.0"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
@@ -171,12 +188,12 @@ class _NutritionResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def calculate(self, **kwargs: Any) -> Dict[str, Any]:
+    def calculate(self, **kwargs: Any) -> NutritionCalculateResponse:
         """Calculate a personalized fuel/hydration/electrolyte prescription."""
         return self._client.request("POST", "/v1/nutrition/calculate", json=kwargs)
 
-    def batch_calculate(self, scenarios: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Batch calculate prescriptions for multiple scenarios (max 50)."""
+    def batch_calculate(self, scenarios: List[Dict[str, Any]]) -> BatchCalculateResponse:
+        """Batch calculate up to 50 scenarios; quota is charged per scenario."""
         return self._client.request("POST", "/v1/nutrition/calculate/batch", json={"scenarios": scenarios})
 
 
@@ -222,19 +239,20 @@ class _AthletesResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def create(self, **kwargs: Any) -> Dict[str, Any]:
+    def create(self, **kwargs: Any) -> Athlete:
         """Create a new athlete under your partner account."""
         return self._client.request("POST", "/v1/athletes", json=kwargs)
 
-    def get(self, athlete_id: str) -> Dict[str, Any]:
+    def get(self, athlete_id: str) -> Athlete:
         """Get an athlete by ID."""
         return self._client.request("GET", f"/v1/athletes/{athlete_id}")
 
-    def list(self, *, limit: int = 50, cursor: Optional[str] = None, search: Optional[str] = None) -> Dict[str, Any]:
+    def list(self, *, limit: int = 50, cursor: Optional[str] = None, search: Optional[str] = None) -> AthleteListResponse:
         """List athletes for your partner account.
 
-        The response array is under the ``athletes`` key, with ``has_more`` and a
-        ``cursor`` for the next page. Pass that ``cursor`` back here to page forward.
+        The array is under ``athletes``. Read ``pagination.has_more`` and pass
+        ``pagination.next_cursor`` back as ``cursor`` for the next page.
+        The legacy ``search`` argument is currently ignored by the API.
         """
         params: Dict[str, Any] = {"limit": limit}
         if cursor:
@@ -243,7 +261,7 @@ class _AthletesResource:
             params["search"] = search
         return self._client.request("GET", "/v1/athletes", params=params)
 
-    def update(self, athlete_id: str, **kwargs: Any) -> Dict[str, Any]:
+    def update(self, athlete_id: str, **kwargs: Any) -> Athlete:
         """Partially update an athlete's profile."""
         return self._client.request("PATCH", f"/v1/athletes/{athlete_id}", json=kwargs)
 
@@ -251,16 +269,16 @@ class _AthletesResource:
         """Delete an athlete and all associated data."""
         self._client.request("DELETE", f"/v1/athletes/{athlete_id}")
 
-    def get_settings(self, athlete_id: str) -> Dict[str, Any]:
+    def get_settings(self, athlete_id: str) -> AthleteSettings:
         """Get an athlete's fueling preference settings."""
         return self._client.request("GET", f"/v1/athletes/{athlete_id}/settings")
 
-    def update_settings(self, athlete_id: str, **kwargs: Any) -> Dict[str, Any]:
-        """Update an athlete's fueling preference settings."""
+    def update_settings(self, athlete_id: str, **kwargs: Any) -> AthleteSettings:
+        """Replace partner-managed athlete settings; send the complete intended settings."""
         return self._client.request("PATCH", f"/v1/athletes/{athlete_id}/settings", json=kwargs)
 
-    def batch_create(self, athletes: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Batch create up to 100 athletes."""
+    def batch_create(self, athletes: List[Dict[str, Any]]) -> BatchAthleteResponse:
+        """Batch create up to 100 athletes; quota is charged per athlete."""
         return self._client.request("POST", "/v1/athletes/batch", json={"athletes": athletes})
 
     def export(self, athlete_id: str) -> Dict[str, Any]:
@@ -272,26 +290,26 @@ class _ActivitiesResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def create(self, athlete_id: str, **kwargs: Any) -> Dict[str, Any]:
+    def create(self, athlete_id: str, **kwargs: Any) -> Activity:
         """Create a new activity for an athlete."""
         return self._client.request("POST", f"/v1/athletes/{athlete_id}/activities", json=kwargs)
 
-    def get(self, athlete_id: str, activity_id: str) -> Dict[str, Any]:
+    def get(self, athlete_id: str, activity_id: str) -> Activity:
         """Get an activity by ID."""
         return self._client.request("GET", f"/v1/athletes/{athlete_id}/activities/{activity_id}")
 
-    def list(self, athlete_id: str, *, limit: int = 20, cursor: Optional[str] = None) -> Dict[str, Any]:
+    def list(self, athlete_id: str, *, limit: int = 20, cursor: Optional[str] = None) -> ActivityListResponse:
         """List activities for an athlete.
 
-        The response array is under the ``activities`` key, with ``has_more`` and a
-        ``cursor`` for the next page. Pass that ``cursor`` back here to page forward.
+        The array is under ``activities``. Read ``pagination.has_more`` and pass
+        ``pagination.next_cursor`` back as ``cursor`` for the next page.
         """
         params: Dict[str, Any] = {"limit": limit}
         if cursor:
             params["cursor"] = cursor
         return self._client.request("GET", f"/v1/athletes/{athlete_id}/activities", params=params)
 
-    def update(self, athlete_id: str, activity_id: str, **kwargs: Any) -> Dict[str, Any]:
+    def update(self, athlete_id: str, activity_id: str, **kwargs: Any) -> Activity:
         """Partially update an activity."""
         return self._client.request("PATCH", f"/v1/athletes/{athlete_id}/activities/{activity_id}", json=kwargs)
 
@@ -299,15 +317,28 @@ class _ActivitiesResource:
         """Delete an activity and its prescription."""
         self._client.request("DELETE", f"/v1/athletes/{athlete_id}/activities/{activity_id}")
 
-    def calculate_prescription(self, athlete_id: str, activity_id: str) -> Dict[str, Any]:
+    def calculate_prescription(self, athlete_id: str, activity_id: str) -> PrescriptionEnvelope:
         """Calculate/recalculate a nutrition prescription for this activity."""
         return self._client.request("POST", f"/v1/athletes/{athlete_id}/activities/{activity_id}/calculate")
 
-    def get_prescription(self, athlete_id: str, activity_id: str) -> Dict[str, Any]:
+    def get_prescription(self, athlete_id: str, activity_id: str) -> StoredPrescriptionResponse:
         """Get the stored prescription for an activity."""
         return self._client.request("GET", f"/v1/athletes/{athlete_id}/activities/{activity_id}/prescription")
 
-    def submit_feedback(self, athlete_id: str, activity_id: str, **kwargs: Any) -> Dict[str, Any]:
+    def import_activities(
+        self,
+        athlete_id: str,
+        activities: Sequence[Union[ImportActivityRequest, Dict[str, Any]]],
+        *,
+        calculate: Optional[bool] = None,
+    ) -> ActivityImportResponse:
+        """Import up to 200 activities; calculation is opt-in and quota is per activity."""
+        payload: Dict[str, Any] = {"activities": activities}
+        if calculate is not None:
+            payload["calculate"] = calculate
+        return self._client.request("POST", f"/v1/athletes/{athlete_id}/activities/import", json=payload)
+
+    def submit_feedback(self, athlete_id: str, activity_id: str, **kwargs: Any) -> ActivityFeedback:
         """Submit post-activity feedback on prescription quality."""
         return self._client.request("POST", f"/v1/athletes/{athlete_id}/activities/{activity_id}/feedback", json=kwargs)
 
@@ -359,18 +390,25 @@ class _AIResource:
         self._client = client
 
     def create_conversation(self, athlete_id: str, initial_message: Optional[str] = None) -> Dict[str, Any]:
-        """Unsupported SSE response. Use direct HTTP; see saturday-python issue #10."""
-        body: Dict[str, Any] = {"athlete_id": athlete_id}
-        if initial_message:
-            body["initial_message"] = initial_message
-        return self._client.request("POST", "/v1/ai/conversations", json=body)
+        """Deprecated: use async create_conversation_stream; sends no request."""
+        raise AIStreamError("streaming_required", "Use async with ai.create_conversation_stream(athlete_id, message) and consume every event. No request was sent.")
 
     def send_message(self, conv_id: str, message: str) -> Dict[str, Any]:
-        """Unsupported SSE response. Use direct HTTP; see saturday-python issue #10."""
-        return self._client.request("POST", f"/v1/ai/conversations/{conv_id}/messages", json={"message": message})
+        """Deprecated: use async send_message_stream; sends no request."""
+        raise AIStreamError("streaming_required", "Use async with ai.send_message_stream(conv_id, message) and consume every event. No request was sent.")
+
+    def create_conversation_stream(self, athlete_id: str, message: str, *, timeout: Optional[float] = None) -> AsyncContextManager[AsyncIterator[AIStreamEvent]]:
+        """Async context manager for a single-attempt AI POST with a total deadline."""
+        return stream_ai(self._client._base_url, dict(self._client._client.headers), "/v1/ai/conversations",
+                         {"athlete_id": athlete_id, "message": message}, self._client._timeout if timeout is None else timeout)
+
+    def send_message_stream(self, conv_id: str, message: str, *, timeout: Optional[float] = None) -> AsyncContextManager[AsyncIterator[AIStreamEvent]]:
+        """Async context manager preserving all events, including errors and warnings."""
+        return stream_ai(self._client._base_url, dict(self._client._client.headers), f"/v1/ai/conversations/{quote(conv_id, safe='')}/messages",
+                         {"message": message}, self._client._timeout if timeout is None else timeout)
 
     def get_messages(self, conv_id: str, *, limit: int = 50) -> Dict[str, Any]:
-        """Get conversation history."""
+        """Get stored JSON history; the server ignores the legacy limit argument."""
         return self._client.request("GET", f"/v1/ai/conversations/{conv_id}/messages", params={"limit": limit})
 
     def get_conversation(self, conv_id: str) -> Dict[str, Any]:
