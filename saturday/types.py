@@ -461,7 +461,7 @@ class _CoachConnectChargeRequired(TypedDict):
     stripe_fees_cents: int
     net_to_coach_cents: int
     currency: str
-    status: Literal["succeeded", "pending", "failed", "refunded", "disputed"]
+    status: Literal["succeeded", "pending", "failed", "refunded", "disputed", "dispute_lost"]
     captured_at: int
     stripe_webhook_event_id: str
 

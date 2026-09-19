@@ -707,7 +707,7 @@ class _CoachResource:
     # --- Billing (read-only; the key must carry billing:read) ---
 
     def seat_state(self, *, org_id: Optional[str] = None) -> CoachSeatState:
-        """The live seat picture. Pass ``org_id`` to read the coach's own organization as payer."""
+        """The live seat picture. Pass ``org_id`` to read the coach's organization as payer."""
         params = {"org_id": org_id} if org_id else None
         return self._client.request("GET", "/v1/coach/billing/seat-state", params=params)
 
