@@ -285,6 +285,9 @@ class CoachSeatState(TypedDict):
     included_total: int
     included_used: int
     coach_paid_count: int
+    # Coach-paid athletes whose seat starts billing when the time they paid for on their
+    # own Monthly plan runs out; not in coach_paid_count until then.
+    pending_coach_paid_count: int
     next_athlete_price_cents: int
     volume_tier: int
     volume_discount_pct: int
