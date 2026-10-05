@@ -632,9 +632,13 @@ class _CoachResource:
 
         ``rules`` is the full set:
         ``{"notification_rules": {"<trigger>": {"enabled", "channels", "cadence",
-        "urgent_threshold"}}, "combinators": [...], "quiet_hours": {...}, "preset"}``.
+        "urgent_threshold"}}, "combinators": [...], "quiet_hours": {...},
+        "hourly_cap": {"enabled", "per_hour"}, "preset"}``.
         Triggers: under_fuel, symptom, low_rating, hyponatremia_pattern, dial_down,
         sleep_trend, went_quiet. Channels: in_portal, email, push, webhook (no SMS).
+        ``hourly_cap`` limits the emails, and separately the pushes, one athlete's alerts
+        send in any 60 minutes (``per_hour`` 1 to 12; with no scope setting it, on at 1).
+        Leaving it out clears it at this scope.
         """
         return self._client.request(
             "PUT",
