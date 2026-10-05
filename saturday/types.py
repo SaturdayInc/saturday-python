@@ -406,7 +406,10 @@ class CoachConnectAccount(_CoachConnectAccountRequired, total=False):
 
 
 class CoachConnectSummary(TypedDict):
-    """connect_account is None for a coach with no Connect account."""
+    """connect_account is None for a coach with no Connect account. platform_fee_minimum_cents is the
+    least Saturday's fee takes from a charge. coach_pays_stripe_fees_from is when the coach starts
+    paying Stripe's processing fee (Unix ms, 0 while Saturday pays it); the stripe_fee_* fields are
+    that fee on Saturday's account: a domestic and an international card rate, plus a fixed amount."""
 
     connect_account: Optional[CoachConnectAccount]
     is_onboarded: bool
@@ -418,13 +421,26 @@ class CoachConnectSummary(TypedDict):
     lifetime_fees_cents: int
     lifetime_net_cents: int
     platform_fee_bps: int
+    platform_fee_minimum_cents: int
+    coach_pays_stripe_fees_from: int
+    stripe_fee_domestic_bps: int
+    stripe_fee_international_bps: int
+    stripe_fee_fixed_cents: int
 
 
 class CoachEarningsSummary(TypedDict):
+    """total_refunded_cents went back to athletes; total_platform_fee_returned_cents is Saturday's fee
+    given back on refunds; total_disputes_cents was taken for disputes and their fees, less what was
+    paid back, of which total_dispute_costs_recovered_cents repaid earlier disputes' costs."""
+
     coach_uid: str
     total_gross_cents: int
     total_stripe_fee_cents: int
     total_platform_fee_cents: int
+    total_refunded_cents: int
+    total_platform_fee_returned_cents: int
+    total_disputes_cents: int
+    total_dispute_costs_recovered_cents: int
     total_net_cents: int
     charge_count: int
     settled_count: int
@@ -437,6 +453,10 @@ class _CoachChargeBreakdownRequired(TypedDict):
     gross_amount_cents: int
     stripe_fees_cents: int
     platform_fee_cents: int
+    refunded_cents: int
+    platform_fee_returned_cents: int
+    disputes_cents: int
+    dispute_costs_recovered_cents: int
     net_to_coach_cents: int
     currency: str
     settlement_status: str
@@ -444,6 +464,13 @@ class _CoachChargeBreakdownRequired(TypedDict):
 
 
 class CoachChargeBreakdown(_CoachChargeBreakdownRequired, total=False):
+    """stripe_fees_cents is the part of Stripe's processing fee the coach pays; stripe_fee_paid_by says
+    who paid it, absent when no fee was recorded. refunded_cents went back to the athlete,
+    platform_fee_returned_cents is Saturday's fee given back on refunds, disputes_cents was taken for
+    disputes and their fees, less what was paid back, of which dispute_costs_recovered_cents repaid
+    earlier disputes' costs."""
+
+    stripe_fee_paid_by: Literal["coach", "saturday"]
     athlete_uid: str
     athlete_display_name: str
 
@@ -470,8 +497,15 @@ class _CoachConnectChargeRequired(TypedDict):
 
 
 class CoachConnectCharge(_CoachConnectChargeRequired, total=False):
+    """status is refunded once any part of the charge is, and refund_amount_cents says how much.
+    stripe_fees_cents is the part of Stripe's processing fee the coach pays; stripe_fee_paid_by says who
+    paid it on a destination charge (absent on a direct charge, where the coach did).
+    platform_fee_returned_cents is Saturday's fee given back on refunds. Absent fields are zero."""
+
     arrangement_id: str
     refund_amount_cents: int
+    stripe_fee_paid_by: Literal["coach", "saturday"]
+    platform_fee_returned_cents: int
 
 
 class _CoachConnectChargesPageRequired(TypedDict):
