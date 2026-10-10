@@ -9,6 +9,10 @@ from saturday import (
     CoachLedgerPage,
     CoachSeatState,
     CoachTierStatus,
+    FuelingProfile,
+    FuelingProfileFieldName,
+    FuelingProfileUpdatedEvent,
+    ProfileSharingChangedEvent,
     ActivityImportResponse,
     ActivityListResponse,
     AthleteListResponse,
@@ -77,3 +81,20 @@ def check_resource_types(client: Saturday) -> None:
     net: int = earnings["summary"]["total_net_cents"] + charges["charges"][0]["net_to_coach_cents"] + arrangements["arrangements"][0]["amount_cents"]
     ledger["pagination"]  # type: ignore[typeddict-item]
     seats["next_athlete_price"]  # type: ignore[typeddict-item]
+
+
+
+def check_fueling_profile(client: Saturday, changed: ProfileSharingChangedEvent, updated: FuelingProfileUpdatedEvent) -> None:
+    fueling: FuelingProfile = client.athletes.get_fueling_profile("ath_1")
+    sharing_state: str = fueling["sharing"]
+    why: Optional[str] = fueling["message"]
+    if fueling["sharing"] == "on":
+        sweat: Optional[int] = fueling["profile"]["sweat_level"]["value"]
+        weight: Optional[float] = fueling["profile"]["athlete_weight_kg"]["value"]
+        source: str = fueling["profile"]["concerns"]["calculations_use"]
+        saved: int = fueling["updated_at"]
+    athlete_state: Optional[str] = client.athletes.get("ath_1").get("profile_sharing")
+    new_state: Optional[str] = changed["data"].get("profile_sharing")
+    fields: list[FuelingProfileFieldName] = updated["data"]["changed_fields"]
+    fueling["profile"]["year_of_birth"]  # type: ignore[typeddict-item]
+    bogus: FuelingProfileFieldName = "year_of_birth"  # type: ignore[assignment]
