@@ -32,6 +32,9 @@ MODELS = {
     "billing_connect_earnings": "CoachConnectEarnings", "billing_connect_earnings_empty": "CoachConnectEarnings",
     "billing_connect_transactions": "CoachConnectChargesPage", "billing_connect_transactions_end": "CoachConnectChargesPage",
     "billing_connect_arrangements": "CoachConnectArrangements",
+    "athlete_sharing": "Athlete",
+    "fueling_profile_on": "FuelingProfile", "fueling_profile_off": "FuelingProfile", "fueling_profile_not_linked": "FuelingProfile",
+    "webhook_profile_sharing_changed": "ProfileSharingChangedEvent", "webhook_fueling_profile_updated": "FuelingProfileUpdatedEvent",
 }
 
 
@@ -195,3 +198,32 @@ def test_coach_billing_reads_are_gets_that_keep_the_raw_payload(name, method, kw
         result = getattr(client.coach, method)(**kwargs)
     assert type(result) is dict
     assert result == payload
+
+
+@pytest.mark.parametrize("name", ["fueling_profile_on", "fueling_profile_off", "fueling_profile_not_linked"])
+def test_get_fueling_profile_reads_the_route_and_keeps_the_raw_payload(name):
+    payload = {**FIXTURES[name], "future_field": True}
+
+    def send(request):
+        assert request.method == "GET"
+        assert request.url.path == "/v1/athletes/ath_1/fueling-profile"
+        assert request.content == b""
+        return httpx.Response(200, json=payload)
+
+    client = Saturday(api_key="sk_test_fixture", max_retries=0)
+    client._client.close()
+    client._client = httpx.Client(base_url=client._base_url, transport=httpx.MockTransport(send))
+    with client:
+        result = client.athletes.get_fueling_profile("ath_1")
+    assert type(result) is dict
+    assert result == payload
+
+
+def test_shared_profile_carries_every_answer_and_unshared_carries_none():
+    from saturday.types import FuelingProfileAnswers, FuelingProfileFieldName
+
+    shared = FIXTURES["fueling_profile_on"]
+    assert set(shared["profile"]) == set(FuelingProfileAnswers.__annotations__) == set(get_args(FuelingProfileFieldName))
+    for name in ("fueling_profile_off", "fueling_profile_not_linked"):
+        assert "profile" not in FIXTURES[name] and "updated_at" not in FIXTURES[name]
+        assert isinstance(FIXTURES[name]["message"], str)

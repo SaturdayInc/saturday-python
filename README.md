@@ -107,7 +107,7 @@ except NotFoundError:
 | Resource | Description |
 |----------|-------------|
 | `client.nutrition` | Calculate prescriptions, batch calculate |
-| `client.athletes` | Athlete CRUD, settings, batch create, GDPR data export |
+| `client.athletes` | Athlete CRUD, settings, the athlete's shared Saturday app answers, batch create, GDPR data export |
 | `client.activities` | Activity CRUD, prescription calculation, import, feedback |
 | `client.products` | Product search, barcode lookup, curated list, categories |
 | `client.ai` | Async AI event streams, plus synchronous JSON conversation metadata, history, listing, and deletion; see AI writes below |
@@ -147,6 +147,25 @@ Athlete and activity list responses keep the resource array under `athletes` or 
 The legacy athlete-list `search` argument is currently ignored by the backend. It remains accepted for source compatibility, but does not filter results.
 
 Athlete settings use flat concern flags, such as `sweat_level=5, gut_distress=True`, not a nested `concerns` object. `athletes.update_settings()` replaces the complete settings for a partner-managed athlete; omitted settings reset. Send the complete intended settings, including values you want to preserve. The SDK does not fetch or merge settings implicitly.
+
+## Athlete profile sharing
+
+An athlete whose Saturday account is connected to your athlete record can choose to share their Saturday app answers with you. `athletes.get_fueling_profile(athlete_id)` returns a `FuelingProfile`; check `sharing` first. Only `"on"` carries `profile` (sex, age, weight and the fueling answers, each with its `value` and `calculations_use`) and `updated_at`; `"off"` and `"not_linked"` carry a `message` saying why there are none. `athletes.get()` returns the same state as `profile_sharing`.
+
+```python
+from saturday import FuelingProfile, Saturday
+
+with Saturday(api_key="sk_live_...") as client:
+    fueling: FuelingProfile = client.athletes.get_fueling_profile("ath_123")
+    if fueling["sharing"] == "on":
+        sweat = fueling["profile"]["sweat_level"]
+        answered = "not answered" if sweat["value"] is None else sweat["value"]
+        print(f"Sweat level {answered}; calculations use {sweat['calculations_use']}")
+    else:
+        print(fueling["message"])
+```
+
+`value` is the app answer, `None` when the athlete has not answered it in the app. `calculations_use` says where the value Saturday's calculations use comes from: `partner` (yours), `saturday_app`, or `default`. The two sharing webhooks, typed as `ProfileSharingChangedEvent` and `FuelingProfileUpdatedEvent`, carry the athlete record with `profile_sharing` (the second adds `changed_fields`); read the route again on either. Full guide: [Reading an athlete's fueling profile](https://docs.saturday.fit/guides/fueling-profile).
 
 ## AI writes
 

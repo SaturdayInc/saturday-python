@@ -170,6 +170,13 @@ class AthleteSettings(TypedDict, total=False):
     concerns_answered: bool
 
 
+ProfileSharing = Literal["on", "off", "not_linked"]
+"""Whether an athlete shares their Saturday app answers with you; not_linked means no Saturday account is connected."""
+
+CalculationsUse = Literal["partner", "saturday_app", "default"]
+"""Where the value Saturday's calculations use for a field comes from: yours, the app answer, or neither (a default, so numbers come back as ranges)."""
+
+
 class _AthleteRequired(TypedDict):
     id: str
     partner_id: str
@@ -190,6 +197,95 @@ class Athlete(_AthleteRequired, total=False):
     partner_plan: str
     org_id: str
     subscription_status: str
+    profile_sharing: ProfileSharing
+    """Computed on athletes.get and in the sharing webhooks' record; absent on lists, and when it could not be read."""
+
+
+# Fueling profile: the athlete's Saturday app answers, when they share them with you. Each answer
+# carries value (the app answer, None when not answered in the app) and calculations_use.
+
+
+class FuelingConcerns(TypedDict):
+    performance: bool
+    gut_distress: bool
+    heat_tolerance: bool
+    muscle_cramps: bool
+    faintness: bool
+    hunger: bool
+    thirst: bool
+    drinking_resistance: bool
+
+
+class FuelingProfileSex(TypedDict):
+    value: Optional[Literal["male", "female", "intersex"]]
+    calculations_use: CalculationsUse
+
+
+class FuelingProfileInt(TypedDict):
+    """age in whole years, or a 1 to 9 answer."""
+
+    value: Optional[int]
+    calculations_use: CalculationsUse
+
+
+class FuelingProfileWeight(TypedDict):
+    """Kilograms, to one decimal."""
+
+    value: Optional[float]
+    calculations_use: CalculationsUse
+
+
+class FuelingProfileCarbExperience(TypedDict):
+    value: Optional[Literal["range_0_30", "range_40_60", "range_gt_70"]]
+    calculations_use: CalculationsUse
+
+
+class FuelingProfileUsualCarb(TypedDict):
+    value: Optional[Literal["range_lt_60", "range_60_80", "range_80_100", "range_gt_100"]]
+    calculations_use: CalculationsUse
+
+
+class FuelingProfileConcerns(TypedDict):
+    """value is None when the athlete never answered the concerns question."""
+
+    value: Optional[FuelingConcerns]
+    calculations_use: CalculationsUse
+
+
+class FuelingProfileAnswers(TypedDict):
+    """The shared answers, under the calculation-side names."""
+
+    sex: FuelingProfileSex
+    age: FuelingProfileInt
+    athlete_weight_kg: FuelingProfileWeight
+    sweat_level: FuelingProfileInt
+    saltiness: FuelingProfileInt
+    satiety_level: FuelingProfileInt
+    fitness_level: FuelingProfileInt
+    carb_experience: FuelingProfileCarbExperience
+    usual_carb_consumption: FuelingProfileUsualCarb
+    concerns: FuelingProfileConcerns
+
+
+FuelingProfileFieldName = Literal[
+    "sex", "age", "athlete_weight_kg", "sweat_level", "saltiness", "satiety_level",
+    "fitness_level", "carb_experience", "usual_carb_consumption", "concerns",
+]
+"""A shared answer's name, as athlete.fueling_profile_updated lists it in changed_fields."""
+
+
+class _FuelingProfileRequired(TypedDict):
+    object: Literal["fueling_profile"]
+    athlete_id: str
+    sharing: ProfileSharing
+    message: Optional[str]
+
+
+class FuelingProfile(_FuelingProfileRequired, total=False):
+    """athletes.get_fueling_profile: profile and updated_at (Unix ms) are present only when sharing is "on"; otherwise message says why."""
+
+    profile: FuelingProfileAnswers
+    updated_at: int
 
 
 class _PaginationRequired(TypedDict):
@@ -548,3 +644,51 @@ class CoachBillingArrangement(_CoachBillingArrangementRequired, total=False):
 class CoachConnectArrangements(TypedDict):
     arrangements: List[CoachBillingArrangement]
     total: int
+
+
+# --- Webhooks ---
+
+WebhookEventType = Literal[
+    "athlete.created", "athlete.updated", "athlete.profile_completed",
+    "athlete.profile_sharing_changed", "athlete.fueling_profile_updated", "athlete.deleted",
+    "activity.created", "activity.updated", "activity.deleted",
+    "prescription.calculated", "feedback.submitted",
+    "subscription.created", "subscription.updated", "subscription.cancelled",
+    "partner.rate_limit_approaching", "webhook.test",
+]
+"""Event names a partner webhook can register. Registration rejects the whole request on one
+unknown name. subscription.updated and partner.rate_limit_approaching are accepted but never sent
+to a partner webhook."""
+
+
+class WebhookEvent(TypedDict):
+    """A webhook delivery's body. Verify the signature on the raw body before parsing it."""
+
+    id: str
+    type: str
+    created_at: int
+    data: Dict[str, Any]
+
+
+class FuelingProfileUpdatedData(Athlete):
+    """The athlete record, profile_sharing included, plus the names of the shared answers that changed."""
+
+    changed_fields: List[FuelingProfileFieldName]
+
+
+class ProfileSharingChangedEvent(TypedDict):
+    """athlete.profile_sharing_changed: data is the athlete record as athletes.get returns it, profile_sharing its new state."""
+
+    id: str
+    type: Literal["athlete.profile_sharing_changed"]
+    created_at: int
+    data: Athlete
+
+
+class FuelingProfileUpdatedEvent(TypedDict):
+    """athlete.fueling_profile_updated: the athlete record plus the names of the changed answers, never their values."""
+
+    id: str
+    type: Literal["athlete.fueling_profile_updated"]
+    created_at: int
+    data: FuelingProfileUpdatedData
