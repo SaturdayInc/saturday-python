@@ -149,6 +149,9 @@ class Activity(_ActivityRequired, total=False):
     external_id: str
     prescription: ActivityPrescription
     feedback: ActivityFeedback
+    # Credit the data's sources require ("Garmin Edge 1040"): show each line verbatim with the
+    # activity and anything built from it. Absent when none is required. Read-only.
+    source_attributions: List[str]
 
 
 class AthleteSettings(TypedDict, total=False):
