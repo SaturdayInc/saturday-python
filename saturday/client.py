@@ -33,6 +33,7 @@ from saturday.types import (
     AthleteSettings,
     BatchAthleteResponse,
     BatchCalculateResponse,
+    FuelingProfile,
     ImportActivityRequest,
     NutritionCalculateResponse,
     PrescriptionEnvelope,
@@ -282,6 +283,14 @@ class _AthletesResource:
     def get_settings(self, athlete_id: str) -> AthleteSettings:
         """Get an athlete's fueling preference settings."""
         return self._client.request("GET", f"/v1/athletes/{athlete_id}/settings")
+
+    def get_fueling_profile(self, athlete_id: str) -> FuelingProfile:
+        """The athlete's Saturday app answers, while they share them with you.
+
+        Check ``sharing`` first: only ``"on"`` carries ``profile`` and ``updated_at``;
+        ``"off"`` and ``"not_linked"`` carry a ``message`` saying why there are none.
+        """
+        return self._client.request("GET", f"/v1/athletes/{athlete_id}/fueling-profile")
 
     def update_settings(self, athlete_id: str, **kwargs: Any) -> AthleteSettings:
         """Replace partner-managed athlete settings; send the complete intended settings."""
