@@ -52,3 +52,23 @@ def test_readme_stored_prescription(monkeypatch, capsys, name, warnings, carbs):
     code = next(code for code in re.findall(r"```python\n(.*?)```", readme, re.S) if "get_prescription" in code)
     exec(compile(code, "README.md stored prescription", "exec"), {})
     assert capsys.readouterr().out.splitlines() == [f"Carbs: {carbs} g/hr", *(warnings or [])]
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("fueling_profile_on", "Sweat level 7; calculations use saturday_app"),
+    ("fueling_profile_off", "This athlete has not chosen to share their Saturday app answers with you."),
+    ("fueling_profile_not_linked", "This athlete has not connected a Saturday account, so there are no Saturday app answers to share."),
+])
+def test_readme_fueling_profile(monkeypatch, capsys, name, expected):
+    fixtures = json.loads(Path(__file__).with_name("fixtures").joinpath("contracts.json").read_text())
+
+    def send(client, request, **kwargs):
+        assert request.method == "GET"
+        assert request.url.path == "/v1/athletes/ath_123/fueling-profile"
+        return httpx.Response(200, json=fixtures[name], request=request)
+
+    monkeypatch.setattr(httpx.Client, "send", send)
+    readme = Path(__file__).parents[1].joinpath("README.md").read_text()
+    code = next(code for code in re.findall(r"```python\n(.*?)```", readme, re.S) if "get_fueling_profile" in code)
+    exec(compile(code, "README.md fueling profile", "exec"), {})
+    assert capsys.readouterr().out.splitlines() == [expected]
