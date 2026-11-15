@@ -90,3 +90,61 @@ def test_rate_limit_retry_after_fallback(make_client, header, expected):
 def test_empty_response(make_client):
     client = make_client(lambda _: httpx.Response(204))
     assert client.athletes.delete("athlete_123") is None
+
+
+def _rate_limited(headers):
+    return httpx.Response(429, json={
+        "error": {"type": "rate_limit_error", "code": "rate_limited", "message": "Slow down"},
+    }, headers=headers)
+
+
+def test_short_retry_after_is_waited_out(make_client, monkeypatch):
+    waits = []
+    monkeypatch.setattr("saturday.client.time.sleep", waits.append)
+    calls = []
+
+    def handler(_):
+        calls.append(1)
+        return _rate_limited({"Retry-After": "3"}) if len(calls) == 1 else httpx.Response(200, json={"questions": []})
+
+    assert make_client(handler).onboarding.questions() == {"questions": []}
+    assert waits == [3.0] and len(calls) == 2
+
+
+@pytest.mark.parametrize("headers", [{}, {"Retry-After": "840"}])
+def test_rate_limit_without_a_short_retry_after_raises_at_once(make_client, monkeypatch, headers):
+    monkeypatch.setattr("saturday.client.time.sleep", lambda _: pytest.fail("slept before raising"))
+    calls = []
+
+    def handler(_):
+        calls.append(1)
+        return _rate_limited(headers)
+
+    with pytest.raises(RateLimitError):
+        make_client(handler).onboarding.questions()
+    assert len(calls) == 1
+
+
+def test_a_create_is_not_retried_on_a_server_error(make_client, monkeypatch):
+    monkeypatch.setattr("saturday.client.time.sleep", lambda _: None)
+    calls = []
+
+    def handler(_):
+        calls.append(1)
+        return httpx.Response(503, json={"error": {"message": "Try again"}})
+
+    with pytest.raises(Exception):
+        make_client(handler).athletes.create(external_id="u-1")
+    assert len(calls) == 1
+
+
+def test_a_calculation_is_still_retried_on_a_server_error(make_client, monkeypatch):
+    monkeypatch.setattr("saturday.client.time.sleep", lambda _: None)
+    calls = []
+
+    def handler(_):
+        calls.append(1)
+        return httpx.Response(503, json={"error": {"message": "Try again"}}) if len(calls) == 1 else httpx.Response(200, json={"tier": "teaser"})
+
+    assert make_client(handler).nutrition.calculate(activity_type="run", duration_min=60) == {"tier": "teaser"}
+    assert len(calls) == 2

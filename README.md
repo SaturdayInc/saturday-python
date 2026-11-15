@@ -44,7 +44,7 @@ Teaser-tier responses and incomplete profiles return ranges rather than exact nu
 ## Features
 
 - TypedDict responses with a `py.typed` marker (PEP 561); values stay ordinary dictionaries
-- Automatic retry on `429` and `5xx` responses for JSON operations: up to 3 retries, with 1 s, 2 s, and 4 s backoff. AI stream writes are never replayed
+- Automatic retry for JSON operations, up to 3 times. A `429` is retried after the server's `Retry-After` when that is 30 s or less; a `429` with no `Retry-After` (a daily limit) or a longer one (a block that lasts minutes) raises `RateLimitError` at once. A `5xx` is retried with 1 s, 2 s, and 4 s backoff, except on a `POST` that creates or changes a record, so a retry cannot make a second athlete. AI stream writes are never replayed
 - Typed errors: `AuthenticationError`, `RateLimitError`, `ValidationError`, `NotFoundError`, `AIStreamError`
 - API key and OAuth2 Bearer token authentication
 - Context manager and `close()` for connection cleanup

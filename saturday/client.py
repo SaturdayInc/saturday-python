@@ -53,6 +53,30 @@ DEFAULT_STREAM_TIMEOUT = 60.0
 DEFAULT_MAX_RETRIES = 3
 
 
+# The longest Retry-After a 429 is waited out for. A longer one is a block that lasts minutes.
+MAX_RETRY_AFTER_SECONDS = 30
+
+
+def _short_retry_after(header: Optional[str]) -> Optional[float]:
+    """Seconds to wait before retrying a 429, or None when it should be raised at once."""
+    if header is None:
+        return None
+    try:
+        seconds = float(header)
+    except ValueError:
+        return None
+    if seconds != seconds or seconds > MAX_RETRY_AFTER_SECONDS:
+        return None
+    return max(0.0, seconds)
+
+
+def _retry_safe_on_server_error(method: str, path: str) -> bool:
+    """A 5xx is retried only where a repeat cannot make a second record."""
+    if method.upper() != "POST":
+        return True
+    return path.startswith("/v1/nutrition/calculate") or path.startswith("/v1/infer/")
+
+
 class Saturday:
     """
     Saturday Nutrition Intelligence API client.
@@ -138,12 +162,20 @@ class Saturday:
         params: Optional[Dict[str, Any]] = None,
         raw: bool = False,
     ) -> Any:
-        """Make an authenticated API request with automatic retry on 429/5xx."""
+        """Make an authenticated API request, retrying where a retry can help.
+
+        A 429 is retried after the server's ``Retry-After`` when that is 30 s or less; one with
+        no ``Retry-After`` (a daily limit) or a longer one (a block) is raised at once. A 5xx is
+        retried with exponential backoff, except on a POST that creates or changes a record.
+        """
         last_error: Optional[SaturdayError] = None
+        # What the last 429 asked for, in seconds; None when the next attempt uses the backoff.
+        retry_after: Optional[float] = None
 
         for attempt in range(self._max_retries + 1):
             if attempt > 0:
-                delay = (2 ** (attempt - 1))
+                delay = retry_after if retry_after is not None else (2 ** (attempt - 1))
+                retry_after = None
                 time.sleep(delay)
 
             try:
@@ -175,8 +207,13 @@ class Saturday:
                         pass
                 last_error = error
 
-                # Only retry on rate limit or server errors
-                if response.status_code == 429 or response.status_code >= 500:
+                if response.status_code == 429:
+                    wait = _short_retry_after(response.headers.get("Retry-After"))
+                    if wait is None:
+                        raise error
+                    retry_after = wait
+                    continue
+                if response.status_code >= 500 and _retry_safe_on_server_error(method, path):
                     continue
 
                 raise error
