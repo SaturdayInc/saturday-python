@@ -33,14 +33,24 @@ def test_readme_quickstart(monkeypatch, capsys, payload, expected):
     ]
 
 
+NUMBERS = ("total_carb_g", "total_sodium_mg", "total_fluid_ml", "carb_g_per_hr", "sodium_mg_per_hr", "fluid_ml_per_hr")
+
+
 @pytest.mark.parametrize("name, warnings, carbs", [
     ("stored_exact", None, "60"),
     ("stored_banded", [], "50-70"),
     ("stored_banded", ["Review this recommendation"], "50-70"),
+    ("stored_banded_without_numbers", [], "50-70"),
 ])
 def test_readme_stored_prescription(monkeypatch, capsys, name, warnings, carbs):
     fixtures = json.loads(Path(__file__).with_name("fixtures").joinpath("contracts.json").read_text())
-    payload = fixtures[name]
+    if name == "stored_banded_without_numbers":
+        # A banded prescription leaves the six numbers out (fuel-backend #2194).
+        payload = json.loads(json.dumps(fixtures["stored_banded"]))
+        for key in NUMBERS:
+            payload["prescription"].pop(key, None)
+    else:
+        payload = fixtures[name]
 
     def send(client, request, **kwargs):
         assert request.method == "GET"

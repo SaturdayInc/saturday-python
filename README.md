@@ -118,9 +118,52 @@ except NotFoundError:
 | `client.onboarding` | The versioned onboarding question schema, for collecting an athlete's profile in your UI |
 | `client.coach` | Roster fueling reads, the coach's alert and report configuration, coach webhooks, and read-only billing (`seat_state`, `ledger`, `tier_status`, `connect_summary`, `connect_earnings`, `connect_transactions`, `connect_arrangements`; the key must carry `billing:read`), with a coach key |
 
+Nutrition, products, gear, AI conversations and knowledge sit behind [feature gates](https://docs.saturday.fit/guides/feature-gates) that Saturday opens per partner. Until a gate is open for your key, its routes answer `404` (`NotFoundError`) or `403` with code `feature_alpha`; ask api@saturday.fit to open one.
+
+## Finding an athlete by your own id
+
+`athletes.list(external_id=...)` returns the athletes you created with that `external_id`, newest first, in one page. Look an athlete up this way before creating one when a create may have been interrupted: the API does not deduplicate `external_id`.
+
+```python
+from saturday import Saturday
+
+with Saturday(api_key="sk_live_...") as client:
+    found = client.athletes.list(external_id="user-42")["athletes"]
+    athlete = found[0] if found else client.athletes.create(external_id="user-42", name="Sam")
+    print(athlete["id"])
+```
+
+## Webhooks
+
+`webhooks.create()` returns the new webhook under `webhook`, with `secret`, the key that signs every delivery. It is returned this once: store it before anything else. `webhooks.test()` delivers a `webhook.test` event at once and returns the delivery record with your endpoint's status code; `webhooks.list_deliveries()` returns the 50 most recent attempts.
+
+```python
+from saturday import Saturday
+
+with Saturday(api_key="sk_live_...") as client:
+    created = client.webhooks.create("https://example.com/saturday", ["athlete.created", "prescription.calculated"])
+    signing_secret = created["webhook"]["secret"]  # store it now
+    delivery = client.webhooks.test(created["webhook"]["id"])["delivery"]
+    print(delivery["status"], delivery["status_code"])
+```
+
+Webhook timestamps are Unix milliseconds. See [Webhooks](https://docs.saturday.fit/guides/webhooks) for verifying signatures.
+
+## Coach alert rules
+
+`coach.set_notification_rules()` replaces the whole rule set at a scope, `channel_config` included. Read the rules first and send them back with your change: a set without `channel_config` clears it at that scope, and at the overall scope that turns the coach's email and push alerts off.
+
+```python
+from saturday import Saturday
+
+with Saturday(api_key="cp_live_...") as client:
+    rules = client.coach.get_notification_rules(scope="overall")
+    client.coach.set_notification_rules("overall", {**rules, "hourly_cap": {"enabled": True, "per_hour": 2}})
+```
+
 ## Prescription and batch responses
 
-The exported types in `saturday.types` describe the existing wire dictionaries; they do not validate, filter, or convert responses. `nutrition.calculate()` returns flat nutrition fields. `activities.calculate_prescription()` returns a `PrescriptionEnvelope`: full-tier results are under `prescription`, while teaser ranges are at the top level. Full-tier prescriptions can also contain ranges when inputs are incomplete.
+The exported types in `saturday.types` describe the existing wire dictionaries; they do not validate, filter, or convert responses. `nutrition.calculate()` returns flat nutrition fields. `activities.calculate_prescription()` returns a `PrescriptionEnvelope`: full-tier results are under `prescription`, while teaser ranges are at the top level. Full-tier prescriptions can also contain ranges when inputs are incomplete; a banded activity prescription's six numbers are then absent or zero, so read the range first.
 
 `activities.get_prescription()` returns `{ "prescription": ..., "safety": ... }`, with no `tier` field. Activity timestamps, including `calculated_at`, use epoch seconds; `trial_ends_at` uses epoch milliseconds. Safety warnings may be `None`.
 
@@ -130,7 +173,7 @@ from saturday import Saturday, StoredPrescriptionResponse
 with Saturday(api_key="sk_live_...") as client:
     stored: StoredPrescriptionResponse = client.activities.get_prescription("ath_123", "act_123")
     prescription = stored["prescription"]
-    carbs = prescription.get("carb_range_g_per_hr", prescription["carb_g_per_hr"])
+    carbs = prescription.get("carb_range_g_per_hr", prescription.get("carb_g_per_hr"))
     print(f"Carbs: {carbs} g/hr")
     for warning in stored["safety"]["warnings"] or []:
         print(warning)

@@ -89,18 +89,19 @@ class NutritionCalculateResponse(_CalculationRequired, TrialMetadata, total=Fals
 
 
 class _ActivityPrescriptionRequired(TypedDict):
+    calculated_at: int  # Epoch seconds.
+
+
+class ActivityPrescription(_ActivityPrescriptionRequired, total=False):
+    """An exact prescription carries the six numbers. When profile_complete is false the
+    ranges carry the result and the numbers are absent or zero: read the range first."""
+
     total_carb_g: int
     total_sodium_mg: int
     total_fluid_ml: int
     carb_g_per_hr: float
     sodium_mg_per_hr: float
     fluid_ml_per_hr: float
-    calculated_at: int  # Epoch seconds.
-
-
-class ActivityPrescription(_ActivityPrescriptionRequired, total=False):
-    """When profile_complete is false, ranges carry the result and numbers are zero."""
-
     profile_complete: bool
     carb_range_g_per_hr: str
     sodium_range_mg_per_hr: str
@@ -651,6 +652,77 @@ class CoachConnectArrangements(TypedDict):
 
 
 # --- Webhooks ---
+
+
+class _WebhookRequired(TypedDict):
+    id: str
+    partner_id: str
+    url: str
+    events: List[str]
+    active: bool
+    fail_count: int
+    created_at: int  # Unix milliseconds.
+    updated_at: int  # Unix milliseconds.
+
+
+class Webhook(_WebhookRequired, total=False):
+    disabled_at: int  # Unix milliseconds; set when repeated delivery failures disabled the webhook.
+
+
+class WebhookWithSecret(Webhook):
+    """The webhook as webhooks.create returns it: secret signs every delivery and is never returned again."""
+
+    secret: str
+
+
+class WebhookCreateResponse(TypedDict):
+    """webhooks.create: the new webhook, with its signing secret, under webhook."""
+
+    webhook: WebhookWithSecret
+    message: str
+    request_id: str
+
+
+class WebhookListResponse(TypedDict):
+    webhooks: List[Webhook]
+    total: int
+    request_id: str
+
+
+class _WebhookDeliveryRequired(TypedDict):
+    id: str
+    webhook_id: str
+    partner_id: str
+    event_id: str
+    event_type: str
+    url: str
+    status_code: int  # The status code your endpoint returned.
+    attempts: int
+    status: Literal["pending", "delivered", "failed", "exhausted"]
+    created_at: int  # Unix milliseconds.
+
+
+class WebhookDelivery(_WebhookDeliveryRequired, total=False):
+    """One delivery attempt record; event_data is the delivered event body, base64-encoded."""
+
+    event_data: str
+    response_body: str  # The first kilobyte of your endpoint's response body.
+    next_retry_at: int
+    completed_at: int
+
+
+class WebhookTestResponse(TypedDict):
+    delivery: WebhookDelivery
+    request_id: str
+
+
+class WebhookDeliveryList(TypedDict):
+    """The 50 most recent delivery attempts, newest first."""
+
+    deliveries: List[WebhookDelivery]
+    total: int
+    request_id: str
+
 
 WebhookEventType = Literal[
     "athlete.created", "athlete.updated", "athlete.profile_completed",

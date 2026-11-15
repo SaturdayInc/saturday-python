@@ -1,7 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
 
+- `webhooks.create()` is typed as `WebhookCreateResponse`: the new webhook is under `webhook`, with `secret`, beside `message` and `request_id`. Read `response["webhook"]["secret"]`; it is returned only at creation. `webhooks.list()`, `get()`, `update()` and `test()` are typed too (`WebhookListResponse`, `Webhook`, `WebhookTestResponse`), with timestamps in Unix milliseconds. The `description` argument of `webhooks.create()` is ignored by the API, which does not store one.
+- Add `webhooks.list_deliveries(webhook_id)` for `GET /v1/webhooks/{id}/deliveries`, the 50 most recent delivery attempts (`WebhookDeliveryList`).
+- `athletes.list()` takes `external_id`: the athletes you created with that `external_id`, newest first, in one page.
+- `ActivityPrescription`'s six numbers (`total_carb_g`, `total_sodium_mg`, `total_fluid_ml`, `carb_g_per_hr`, `sodium_mg_per_hr`, `fluid_ml_per_hr`) are optional keys. A banded prescription carries the three ranges, and the API leaves the numbers out of it rather than sending zeros. The README's stored-prescription example read `prescription["carb_g_per_hr"]` as the fallback, which raises `KeyError` on such a prescription; it now reads `prescription.get("carb_g_per_hr")`.
+- `set_notification_rules` documents `channel_config`, the email address and push devices alerts go to: a write replaces it with the rest of the set, so send back the one `get_notification_rules` returned. Left out at the overall scope, the coach's email and push alerts turn off.
 - Add `athletes.get_fueling_profile(athlete_id)` for `GET /v1/athletes/{id}/fueling-profile`: the athlete's Saturday app answers while they share them with you, typed as `FuelingProfile`. `profile` (`FuelingProfileAnswers`, each answer with `value` and `calculations_use`) and `updated_at` are present only when `sharing` is `"on"`; `"off"` and `"not_linked"` carry `message`. `Athlete` gains the optional `profile_sharing` (`ProfileSharing`: `on`, `off` or `not_linked`), returned by `athletes.get`.
 - Add webhook body types: `WebhookEvent`, `WebhookEventType` (the names registration accepts), and `ProfileSharingChangedEvent` and `FuelingProfileUpdatedEvent` for `athlete.profile_sharing_changed` and `athlete.fueling_profile_updated`, whose data is the athlete record (the second adds `changed_fields`, typed `FuelingProfileFieldName`).
 - `Activity` gains the optional `source_attributions`: the credit lines the activity's sources require, for example `"Garmin Edge 1040"` on a workout recorded on a Garmin device. Show each line verbatim wherever you show the activity or anything built from it. The API sends it only when a source requires credit; the coach roster, report and session reads carry the same field.

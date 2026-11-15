@@ -38,9 +38,14 @@ from saturday.types import (
     NutritionCalculateResponse,
     PrescriptionEnvelope,
     StoredPrescriptionResponse,
+    WebhookCreateResponse,
+    WebhookDeliveryList,
+    WebhookListResponse,
+    WebhookTestResponse,
+    Webhook,
 )
 
-SDK_VERSION = "0.7.0"
+SDK_VERSION = "0.8.0"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
 DEFAULT_TIMEOUT = 30.0
 # AI turns run up to the API's 60 s request cap, so an unconfigured stream deadline is longer than the JSON default.
@@ -258,16 +263,26 @@ class _AthletesResource:
         """Get an athlete by ID."""
         return self._client.request("GET", f"/v1/athletes/{athlete_id}")
 
-    def list(self, *, limit: int = 50, cursor: Optional[str] = None, search: Optional[str] = None) -> AthleteListResponse:
+    def list(
+        self,
+        *,
+        limit: int = 50,
+        cursor: Optional[str] = None,
+        external_id: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> AthleteListResponse:
         """List athletes for your partner account.
 
         The array is under ``athletes``. Read ``pagination.has_more`` and pass
         ``pagination.next_cursor`` back as ``cursor`` for the next page.
-        The legacy ``search`` argument is currently ignored by the API.
+        ``external_id`` returns only the athletes you created with that id, newest
+        first, in one page. The legacy ``search`` argument is ignored by the API.
         """
         params: Dict[str, Any] = {"limit": limit}
         if cursor:
             params["cursor"] = cursor
+        if external_id:
+            params["external_id"] = external_id
         if search:
             params["search"] = search
         return self._client.request("GET", "/v1/athletes", params=params)
@@ -447,32 +462,41 @@ class _WebhooksResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def create(self, url: str, events: List[str], description: Optional[str] = None) -> Dict[str, Any]:
-        """Register a webhook endpoint."""
+    def create(self, url: str, events: List[str], description: Optional[str] = None) -> WebhookCreateResponse:
+        """Register a webhook endpoint.
+
+        The webhook comes back under ``webhook`` with ``secret``, which signs every delivery:
+        store ``response["webhook"]["secret"]`` now, it is never returned again.
+        ``description`` is ignored: the API does not store one.
+        """
         body: Dict[str, Any] = {"url": url, "events": events}
         if description:
             body["description"] = description
         return self._client.request("POST", "/v1/webhooks", json=body)
 
-    def list(self) -> Dict[str, Any]:
+    def list(self) -> WebhookListResponse:
         """List registered webhooks."""
         return self._client.request("GET", "/v1/webhooks")
 
-    def get(self, webhook_id: str) -> Dict[str, Any]:
+    def get(self, webhook_id: str) -> Webhook:
         """Get webhook details."""
         return self._client.request("GET", f"/v1/webhooks/{webhook_id}")
 
-    def update(self, webhook_id: str, **kwargs: Any) -> Dict[str, Any]:
-        """Update a webhook."""
+    def update(self, webhook_id: str, **kwargs: Any) -> Webhook:
+        """Update a webhook's ``url``, ``events`` or ``active``."""
         return self._client.request("PATCH", f"/v1/webhooks/{webhook_id}", json=kwargs)
 
     def delete(self, webhook_id: str) -> None:
         """Delete a webhook."""
         self._client.request("DELETE", f"/v1/webhooks/{webhook_id}")
 
-    def test(self, webhook_id: str) -> Dict[str, Any]:
-        """Send a test event."""
+    def test(self, webhook_id: str) -> WebhookTestResponse:
+        """Deliver a ``webhook.test`` event now and return the delivery record, with your endpoint's status code."""
         return self._client.request("POST", f"/v1/webhooks/{webhook_id}/test")
+
+    def list_deliveries(self, webhook_id: str) -> WebhookDeliveryList:
+        """The 50 most recent delivery attempts for a webhook, newest first."""
+        return self._client.request("GET", f"/v1/webhooks/{webhook_id}/deliveries")
 
 
 class _OrganizationsResource:
@@ -647,7 +671,9 @@ class _CoachResource:
         sleep_trend, went_quiet. Channels: in_portal, email, push, webhook (no SMS).
         ``hourly_cap`` limits the emails, and separately the pushes, one athlete's alerts
         send in any 60 minutes (``per_hour`` 1 to 12; with no scope setting it, on at 1).
-        Leaving it out clears it at this scope.
+        Leaving it out clears it at this scope. ``channel_config`` (the email address and push
+        devices alerts go to) is replaced too: send back the one ``get_notification_rules``
+        returned. Left out at the overall scope, email and push alerts turn off.
         """
         return self._client.request(
             "PUT",
