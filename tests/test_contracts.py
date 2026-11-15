@@ -13,6 +13,7 @@ FIXTURES = json.loads(Path(__file__).with_name("fixtures").joinpath("contracts.j
 MODELS = {
     "activity_exact": "ActivityPrescription", "activity_banded": "ActivityPrescription",
     "nutrition_exact": "NutritionCalculateResponse", "nutrition_banded": "NutritionCalculateResponse",
+    "nutrition_banded_signed_in": "NutritionCalculateResponse",
     "nutrition_teaser": "NutritionCalculateResponse", "nutrition_trial": "NutritionCalculateResponse", "nutrition_zero": "NutritionCalculateResponse",
     "activity_full": "PrescriptionEnvelope", "activity_full_banded": "PrescriptionEnvelope",
     "activity_teaser": "PrescriptionEnvelope", "activity_trial": "PrescriptionEnvelope",

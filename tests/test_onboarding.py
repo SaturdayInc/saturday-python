@@ -10,17 +10,20 @@ import httpx
 from saturday import Saturday
 
 
-def _client_with(handler):
+def _client_with(handler, **kwargs):
     """Build a Saturday client whose HTTP calls are served by ``handler``."""
-    client = Saturday(api_key="sk_test_x")
+    client = Saturday(api_key="sk_test_x", **kwargs)
+    headers = client._client.headers
+    client._client.close()
     client._client = httpx.Client(
         base_url=client._base_url,
+        headers=headers,
         transport=httpx.MockTransport(handler),
     )
     return client
 
 
-def test_onboarding_questions_path_and_shape():
+def test_onboarding_questions_shape():
     """questions() GETs /v1/onboarding/questions and returns the typed schema."""
     seen = {}
 
@@ -100,6 +103,37 @@ def test_precision_incomplete_profile_bands():
     assert p["missing_fields"][0]["field"] == "sweat_level"
     assert p["missing_fields"][0]["band_impact"]["sodium_mg_per_hr"] == 100
     assert "ot=" in p["onboarding"]["url"]
+
+
+def test_precision_oauth_missing_fields_without_band_impact():
+    """With an OAuth access token, missing_fields arrive without band_impact."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer oauth_access_token"
+        return httpx.Response(
+            200,
+            json={
+                "tier": "full",
+                "carb_range_g_per_hr": "60-80",
+                "safety": {"confidence_score": 0.62},
+                "precision": {
+                    "profile_complete": False,
+                    "missing_fields": [
+                        {"field": "intensity_level", "required": True, "display_label": "how hard the effort will be"},
+                        {"field": "sweat_level", "required": True, "display_label": "how much you sweat"},
+                    ],
+                    "message": "For exact numbers, a few key details are still needed: how hard the effort will be, how much you sweat. Each one narrows the range.",
+                },
+            },
+        )
+
+    client = _client_with(handler, bearer_token="oauth_access_token")
+    rx = client.nutrition.calculate(activity_type="run", duration_min=90)
+    fields = rx["precision"]["missing_fields"]
+
+    assert [f["field"] for f in fields] == ["intensity_level", "sweat_level"]
+    assert all("band_impact" not in f for f in fields)
+    assert fields[0].get("band_impact") is None
 
 
 def test_precision_complete_profile_exact():
