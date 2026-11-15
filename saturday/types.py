@@ -34,10 +34,11 @@ class BandImpact(TypedDict):
 class _MissingFieldRequired(TypedDict):
     field: str
     required: bool
-    band_impact: BandImpact
 
 
 class MissingField(_MissingFieldRequired, total=False):
+    # Sent with a partner API key; absent with an athlete's OAuth access token.
+    band_impact: BandImpact
     display_label: str
 
 

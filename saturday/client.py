@@ -221,8 +221,8 @@ class _OnboardingResource:
         rx = client.nutrition.calculate(activity_type="run", duration_min=90)
         p = rx["precision"]
         if not p["profile_complete"]:
-            for f in p["missing_fields"]:        # sorted most-impactful-first
-                print(f["field"], f["band_impact"])
+            for f in p["missing_fields"]:        # ask in the order they arrive
+                print(f["field"], f.get("band_impact"))  # absent with an OAuth access token
             invite_url = p.get("onboarding", {}).get("url")  # athlete-scoped requests only
 
     **Attribution is required** when you render these questions in your UI — the
