@@ -139,3 +139,38 @@ def test_403_is_permission_denied(make_client):
 def test_empty_response(make_client):
     client = make_client(lambda _: httpx.Response(204))
     assert client.athletes.delete("athlete_123") is None
+
+
+def test_create_is_not_retried_on_5xx(make_client, monkeypatch):
+    monkeypatch.setattr("saturday.client.time.sleep", lambda _: pytest.fail("a create must not be retried"))
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(503, json={"error": {"message": "Try again"}})
+
+    client = make_client(handler)
+    with pytest.raises(Exception) as raised:
+        client.athletes.create(external_id="u-1")
+    assert raised.value.status == 503
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("call", [
+    lambda c: c.nutrition.calculate(activity_type="run", duration_min=60),
+    lambda c: c.activities.calculate_prescription("ath_1", "act_1"),
+    lambda c: c.activities.prep("ath_1", "act_1"),
+])
+def test_compute_posts_are_retried_on_5xx(make_client, monkeypatch, call):
+    monkeypatch.setattr("saturday.client.time.sleep", lambda _: None)
+    responses = iter([httpx.Response(503, json={"error": {"message": "Try again"}}), httpx.Response(200, json={"tier": "teaser"})])
+    client = make_client(lambda _: next(responses))
+    assert call(client) == {"tier": "teaser"}
+
+
+def test_31_second_retry_after_is_raised(make_client, monkeypatch):
+    monkeypatch.setattr("saturday.client.time.sleep", lambda _: pytest.fail("must not wait 31 s"))
+    client = make_client(lambda _: httpx.Response(429, json={"error": {"message": "Slow down"}}, headers={"Retry-After": "31"}))
+    with pytest.raises(RateLimitError) as raised:
+        client.onboarding.questions()
+    assert raised.value.retry_after == 31

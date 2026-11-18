@@ -8,6 +8,7 @@ Every method returns the API's JSON as plain dictionaries, typed with the TypedD
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any, Dict, List, Optional, Sequence, Union
 from urllib.parse import quote
@@ -38,7 +39,6 @@ from saturday.types import (
     ConsentListResponse,
     ConsentRecord,
     CreatedApiKey,
-    CreateWebhookResponse,
     DailyUsageResponse,
     ErrorCatalogResponse,
     FuelingProfile,
@@ -67,16 +67,29 @@ from saturday.types import (
     StoredPrescriptionResponse,
     UsageResponse,
     Webhook,
-    WebhookDeliveriesResponse,
+    WebhookDeliveryList,
+    WebhookCreateResponse,
     WebhookListResponse,
+    WebhookTestResponse,
 )
 
 SDK_VERSION = "0.8.0"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 3
-# A longer Retry-After is raised to the caller rather than waited out inside one call.
-MAX_RETRY_AFTER_S = 60
+# The longest Retry-After a 429 is waited out for. A longer one is a block that lasts minutes.
+MAX_RETRY_AFTER_S = 30
+_RETRY_SAFE_ACTIVITY_POST = re.compile(r"^/v1/athletes/[^/]+/(activities/[^/]+/(calculate|prep)|export)$")
+
+
+def _retry_safe_on_server_error(method: str, path: str) -> bool:
+    """A 5xx is retried only where a repeat cannot make a second record: every GET, PUT, PATCH
+    and DELETE, and the POSTs that compute or read (calculations, product fit and compare, label
+    reading, inference, an activity's calculate and prep, export)."""
+    if method.upper() != "POST":
+        return True
+    bare = path.split("?")[0]
+    return bare.startswith(("/v1/nutrition/", "/v1/infer/")) or bool(_RETRY_SAFE_ACTIVITY_POST.match(bare))
 
 
 def _seg(value: str) -> str:
@@ -98,7 +111,7 @@ class Saturday:
         api_key: A partner key (``sk_live_...`` or ``sk_test_...``) or a coach key (``cp_live_...`` or ``cp_test_...``).
         base_url: Defaults to https://api.saturday.fit.
         timeout: Per-request timeout in seconds. Defaults to 30.
-        max_retries: Retries for 5xx responses and for 429s whose ``Retry-After`` is 60 seconds or less. Defaults to 3; 0 disables retries.
+        max_retries: Retries for 429s whose ``Retry-After`` is 30 seconds or less and for 5xx responses (not on a POST that creates or changes a record). Defaults to 3; 0 disables retries.
         bearer_token: An athlete's OAuth2 access token, sent in place of the API key.
 
     Example::
@@ -173,9 +186,10 @@ class Saturday:
     ) -> Any:
         """Send an authenticated request.
 
-        A 5xx is retried after 1, 2 and 4 seconds; a 429 whose ``Retry-After`` is 60 seconds or
-        less is retried after that many seconds. Any other 429 (a daily ceiling has no
-        ``Retry-After``) and every other 4xx raise at once.
+        A 429 whose ``Retry-After`` is 30 seconds or less is retried after that wait; a 5xx is
+        retried after 1, 2 and 4 seconds, except on a POST that creates or changes a record, since
+        the server may have done the write. Any other 429 (a daily ceiling has no ``Retry-After``)
+        and every other 4xx raise at once.
         """
         last_error: Optional[SaturdayError] = None
 
@@ -203,7 +217,7 @@ class Saturday:
                 if error.daily_limit or error.retry_after > MAX_RETRY_AFTER_S:
                     raise error
                 delay: float = error.retry_after
-            elif response.status_code >= 500:
+            elif response.status_code >= 500 and _retry_safe_on_server_error(method, path):
                 delay = 2 ** attempt
             else:
                 raise error
@@ -272,7 +286,12 @@ class _AthletesResource:
         external_id: Optional[str] = None,
         profile_complete: Optional[bool] = None,
     ) -> AthleteListResponse:
-        """One page of athletes. Pass ``pagination["next_cursor"]`` back as ``cursor``."""
+        """One page of athletes. Pass ``pagination["next_cursor"]`` back as ``cursor``.
+
+        ``external_id`` returns only the athletes you created with that id, newest first, in one
+        page. The API does not deduplicate ``external_id``, so look an athlete up this way before
+        creating one when a create may have been interrupted.
+        """
         return self._client.request("GET", "/v1/athletes", params=_params(
             limit=limit, cursor=cursor, external_id=external_id, profile_complete=profile_complete,
         ))
@@ -282,7 +301,8 @@ class _AthletesResource:
         return self._client.request("PATCH", f"/v1/athletes/{_seg(athlete_id)}", json=updates)
 
     def delete(self, athlete_id: str) -> None:
-        """Delete the athlete record. To erase everything stored for the athlete, use ``erase``."""
+        """Delete the athlete and everything stored under them in your account. For a data-subject
+        erasure request use ``erase``."""
         self._client.request("DELETE", f"/v1/athletes/{_seg(athlete_id)}")
 
     def get_settings(self, athlete_id: str) -> AthleteSettings:
@@ -306,7 +326,9 @@ class _AthletesResource:
         return self._client.request("POST", f"/v1/athletes/{_seg(athlete_id)}/export")
 
     def erase(self, athlete_id: str) -> None:
-        """Erase the athlete and everything stored for them under your account (right to erasure)."""
+        """Erase the athlete for a right-to-erasure request: everything ``delete`` removes, plus
+        ending the athlete's connected-provider grants and erasing the data those providers sent,
+        with an audit record of the deletion."""
         self._client.request("POST", f"/v1/athletes/{_seg(athlete_id)}/delete")
 
     def list_consent(self, athlete_id: str) -> ConsentListResponse:
@@ -461,8 +483,9 @@ class _WebhooksResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def create(self, url: str, events: List[str]) -> CreateWebhookResponse:
-        """Register an endpoint. ``response["webhook"]["secret"]`` is shown once."""
+    def create(self, url: str, events: List[str]) -> WebhookCreateResponse:
+        """Register an endpoint. Store ``response["webhook"]["secret"]`` now: it signs every
+        delivery and is never returned again."""
         return self._client.request("POST", "/v1/webhooks", json={"url": url, "events": events})
 
     def list(self) -> WebhookListResponse:
@@ -478,12 +501,12 @@ class _WebhooksResource:
     def delete(self, webhook_id: str) -> None:
         self._client.request("DELETE", f"/v1/webhooks/{_seg(webhook_id)}")
 
-    def test(self, webhook_id: str) -> Dict[str, Any]:
-        """Send a ``webhook.test`` event to the endpoint now."""
+    def test(self, webhook_id: str) -> WebhookTestResponse:
+        """Deliver a ``webhook.test`` event now and return the delivery record, with your endpoint's status code."""
         return self._client.request("POST", f"/v1/webhooks/{_seg(webhook_id)}/test")
 
-    def deliveries(self, webhook_id: str) -> WebhookDeliveriesResponse:
-        """Recent delivery attempts to the endpoint, newest first."""
+    def list_deliveries(self, webhook_id: str) -> WebhookDeliveryList:
+        """The 50 most recent delivery attempts to the endpoint, newest first."""
         return self._client.request("GET", f"/v1/webhooks/{_seg(webhook_id)}/deliveries")
 
 
@@ -734,7 +757,9 @@ class _CoachResource:
         sleep_trend, went_quiet. Channels: in_portal, email, push, webhook (no SMS).
         ``hourly_cap`` limits the emails, and separately the pushes, one athlete's alerts
         send in any 60 minutes (``per_hour`` 1 to 12; with no scope setting it, on at 1).
-        Leaving it out clears it at this scope.
+        Leaving it out clears it at this scope. ``channel_config`` (the email address and push
+        devices alerts go to) is replaced too: send back the one ``get_notification_rules``
+        returned. Left out at the overall scope, email and push alerts turn off.
         """
         return self._client.request(
             "PUT",

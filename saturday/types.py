@@ -1041,10 +1041,14 @@ class Webhook(_WebhookRequired, total=False):
 
 
 class WebhookWithSecret(Webhook):
+    """The webhook as webhooks.create returns it: secret signs every delivery and is never returned again."""
+
     secret: str
 
 
-class CreateWebhookResponse(TypedDict):
+class WebhookCreateResponse(TypedDict):
+    """webhooks.create: the new webhook, with its signing secret, under webhook."""
+
     webhook: WebhookWithSecret
     message: str
     request_id: str
@@ -1076,7 +1080,14 @@ class WebhookDelivery(_WebhookDeliveryRequired, total=False):
     completed_at: int
 
 
-class WebhookDeliveriesResponse(TypedDict):
+class WebhookTestResponse(TypedDict):
+    delivery: WebhookDelivery
+    request_id: str
+
+
+class WebhookDeliveryList(TypedDict):
+    """The 50 most recent delivery attempts, newest first."""
+
     deliveries: List[WebhookDelivery]
     total: int
     request_id: str

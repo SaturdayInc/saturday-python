@@ -178,12 +178,12 @@ def test_main_flows(live):
     client.partner.revoke_api_key(rotated["id"])
 
     # Webhooks
-    hook = capture("webhook_created", "CreateWebhookResponse", client.webhooks.create("https://example.com/saturday-live-suite", ["prescription.calculated"]))
+    hook = capture("webhook_created", "WebhookCreateResponse", client.webhooks.create("https://example.com/saturday-live-suite", ["prescription.calculated"]))
     hook_id = hook["webhook"]["id"]
     capture("webhook_list", "WebhookListResponse", client.webhooks.list())
     capture("webhook", "Webhook", client.webhooks.get(hook_id))
     assert client.webhooks.update(hook_id, active=False)["active"] is False
-    capture("webhook_deliveries", "WebhookDeliveriesResponse", client.webhooks.deliveries(hook_id))
+    capture("webhook_deliveries", "WebhookDeliveryList", client.webhooks.list_deliveries(hook_id))
     client.webhooks.delete(hook_id)
 
     # Organizations

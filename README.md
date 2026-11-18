@@ -129,7 +129,7 @@ When the athlete's profile is missing answers, prep, product fit and compare pla
 | `client.reference` | `activity_types`, `settings_schema` |
 | `client.infer` | `activity_type`, `brick_types` |
 | `client.partner` | `get`, `usage`, `usage_daily`, `list_api_keys`, `create_api_key`, `revoke_api_key`, `rotate_api_key` |
-| `client.webhooks` | `create`, `list`, `get`, `update`, `delete`, `test`, `deliveries` |
+| `client.webhooks` | `create`, `list`, `get`, `update`, `delete`, `test`, `list_deliveries` |
 | `client.organizations` | `create`, `list`, `get`, `update`, `add_member`, `list_members`, `remove_member`, `set_offer`, `get_offer`, `delete_offer`, `create_subscription`, `list_subscriptions`, `update_subscription`, `add_licenses`, `list_licenses`, `remove_license` |
 | `client.integrations` | `sync`, `status`, `disconnect` |
 | `client.testing` | `simulate_subscription` (test keys only) |
@@ -139,7 +139,50 @@ When the athlete's profile is missing answers, prep, product fit and compare pla
 
 Every method returns the API's JSON as plain dictionaries, typed with the TypedDicts in `saturday.types`. Lists keep their array under its name (`athletes`, `activities`) with `pagination["next_cursor"]` to pass back as `cursor`. Batch responses keep request order with failed items left out; match a failure to your input by `errors[i]["index"]`.
 
-`athletes.update_settings` replaces the whole settings object: send every setting you want kept. `athletes.delete` removes the athlete record; `athletes.erase` removes the athlete and everything stored for them.
+`athletes.update_settings` replaces the whole settings object: send every setting you want kept. `athletes.delete` removes the athlete and everything stored under them in your account. `athletes.erase` is for a right-to-erasure request: it also ends the athlete's connected-provider grants, erases what those providers sent, and keeps an audit record of the deletion.
+
+Nutrition and knowledge sit behind [feature gates](https://docs.saturday.fit/guides/feature-gates) that Saturday opens per partner. Until a gate is open for your key, its routes answer `403` with code `feature_alpha` (`PermissionDeniedError`); ask api@saturday.fit to open one.
+
+## Finding an athlete by your own id
+
+`athletes.list(external_id=...)` returns the athletes you created with that `external_id`, newest first, in one page. The API does not deduplicate `external_id`, so look an athlete up this way before creating one when a create may have been interrupted.
+
+```python
+from saturday import Saturday
+
+with Saturday(api_key="sk_live_...") as client:
+    found = client.athletes.list(external_id="user-42")["athletes"]
+    athlete = found[0] if found else client.athletes.create(external_id="user-42", name="Sam")
+    print(athlete["id"])
+```
+
+## Webhooks
+
+`webhooks.create()` returns the new webhook under `webhook`, with `secret`, the key that signs every delivery. It is returned this once: store it before anything else. `webhooks.test()` delivers a `webhook.test` event at once and returns the delivery record with your endpoint's status code; `webhooks.list_deliveries()` returns the 50 most recent attempts. Webhook timestamps are Unix milliseconds.
+
+```python
+from saturday import Saturday
+
+with Saturday(api_key="sk_live_...") as client:
+    created = client.webhooks.create("https://example.com/saturday", ["athlete.created", "prescription.calculated"])
+    signing_secret = created["webhook"]["secret"]  # store it now
+    delivery = client.webhooks.test(created["webhook"]["id"])["delivery"]
+    print(delivery["status"], delivery["status_code"])
+```
+
+See [Webhooks](https://docs.saturday.fit/guides/webhooks) for verifying signatures.
+
+## Coach alert rules
+
+`coach.set_notification_rules()` replaces the whole rule set at a scope, `channel_config` included. Read the rules first and send them back with your change: a set without `channel_config` clears it at that scope, and at the overall scope that turns the coach's email and push alerts off.
+
+```python
+from saturday import Saturday
+
+with Saturday(api_key="cp_live_...") as client:
+    rules = client.coach.get_notification_rules(scope="overall")
+    client.coach.set_notification_rules("overall", {**rules, "hourly_cap": {"enabled": True, "per_hour": 2}})
+```
 
 ## Errors, retries and limits
 
@@ -160,7 +203,7 @@ with Saturday(api_key="sk_test_...") as client:
         print(f"Fix {error.param}: {error}")
 ```
 
-The client retries a 5xx (after 1 s, 2 s, then 4 s) and a 429 whose `Retry-After` is 60 seconds or less (after that many seconds), up to `max_retries` times. A longer wait comes back to you as a `RateLimitError` with `retry_after` in seconds: product answers, for example, are paced for some minutes once a key has received a large share of the catalog in a day. A 429 without `Retry-After` is a daily ceiling: `daily_limit` is True and nothing succeeds before midnight UTC. `client.partner.get()` shows your limits and `client.partner.usage()` what you have used.
+The client retries a 429 whose `Retry-After` is 30 seconds or less, after that many seconds, and a 5xx after 1 s, 2 s and 4 s, up to `max_retries` times. A 5xx on a `POST` that creates or changes a record (an athlete, an activity, an import, a webhook) is not retried, since the server may have done the write; the calculation, product, inference, prep and export `POST`s are. A longer `Retry-After` comes back to you as a `RateLimitError` with `retry_after` in seconds: after a calculation sweep, or when product answers are paced once a key has received a large share of the catalog in a day. A 429 without `Retry-After` is a daily ceiling: `daily_limit` is True and nothing succeeds before midnight UTC. `client.partner.get()` shows your limits and `client.partner.usage()` what you have used.
 
 ## Configuration
 

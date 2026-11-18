@@ -70,7 +70,7 @@ class PermissionDeniedError(SaturdayError):
 class RateLimitError(SaturdayError):
     """429.
 
-    A rate limit or pacing carries ``retry_after`` in seconds; the client waits out one of 60
+    A rate limit or pacing carries ``retry_after`` in seconds; the client waits out one of 30
     seconds or less itself. A daily ceiling has no ``retry_after`` (``daily_limit`` is True) and
     resets at midnight UTC.
     """
