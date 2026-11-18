@@ -1,71 +1,113 @@
 """
-Saturday API client with automatic retry and typed resource accessors.
+Saturday API client: fueling prescriptions (carbohydrate, sodium and fluid) for endurance
+sessions, sized to each athlete, and product fit and prep against them.
 
-Safety metadata is ALWAYS included in nutrition responses — athlete safety
-cannot be paywalled. The ``not_instructions`` field is present in every
-nutrition response for AI consumers.
+Every method returns the API's JSON as plain dictionaries, typed with the TypedDicts in
+``saturday.types``.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any, AsyncContextManager, AsyncIterator, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 from urllib.parse import quote
 
 import httpx
 
 from saturday.errors import RateLimitError, SaturdayError
-from saturday.ai_stream import AIStreamError, AIStreamEvent, stream_ai
 from saturday.types import (
-    CoachSeatState,
-    CoachLedgerPage,
-    CoachTierStatus,
-    CoachConnectSummary,
-    CoachConnectEarnings,
-    CoachConnectChargesPage,
-    CoachConnectArrangements,
     Activity,
     ActivityFeedback,
     ActivityImportResponse,
     ActivityListResponse,
+    ActivityTypesResponse,
+    ApiKeyListResponse,
     Athlete,
+    AthleteDataExport,
     AthleteListResponse,
     AthleteSettings,
     BatchAthleteResponse,
     BatchCalculateResponse,
+    CoachConnectArrangements,
+    CoachConnectChargesPage,
+    CoachConnectEarnings,
+    CoachConnectSummary,
+    CoachLedgerPage,
+    CoachSeatState,
+    CoachTierStatus,
+    ConsentListResponse,
+    ConsentRecord,
+    CreatedApiKey,
+    CreateWebhookResponse,
+    DailyUsageResponse,
+    ErrorCatalogResponse,
     FuelingProfile,
+    HealthResponse,
     ImportActivityRequest,
+    IntegrationStatusResponse,
+    IntegrationSyncResponse,
+    LicenseListResponse,
     NutritionCalculateResponse,
+    OnboardingQuestionsResponse,
+    Organization,
+    OrganizationListResponse,
+    OrganizationMember,
+    OrganizationMembersResponse,
+    OrganizationOffer,
+    OrganizationSubscription,
+    OrganizationSubscriptionListResponse,
+    PartnerAccount,
+    PrepResponse,
     PrescriptionEnvelope,
+    ProductCompareResponse,
+    ProductFitResponse,
+    RotatedApiKey,
+    SettingsSchemaResponse,
+    SimulateSubscriptionResponse,
     StoredPrescriptionResponse,
+    UsageResponse,
+    Webhook,
+    WebhookDeliveriesResponse,
+    WebhookListResponse,
 )
 
-SDK_VERSION = "0.7.0"
+SDK_VERSION = "0.8.0"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
 DEFAULT_TIMEOUT = 30.0
-# AI turns run up to the API's 60 s request cap, so an unconfigured stream deadline is longer than the JSON default.
-DEFAULT_STREAM_TIMEOUT = 60.0
 DEFAULT_MAX_RETRIES = 3
+# A longer Retry-After is raised to the caller rather than waited out inside one call.
+MAX_RETRY_AFTER_S = 60
+
+
+def _seg(value: str) -> str:
+    """Encode one path segment."""
+    return quote(str(value), safe="")
+
+
+def _params(**values: Any) -> Optional[Dict[str, Any]]:
+    """Query parameters, without the ones left unset."""
+    out = {k: (str(v).lower() if isinstance(v, bool) else v) for k, v in values.items() if v is not None and v != ""}
+    return out or None
 
 
 class Saturday:
     """
-    Saturday Nutrition Intelligence API client.
+    Saturday API client.
 
     Args:
-        api_key: Your partner API key (sk_live_... or sk_test_...).
-        base_url: Base URL override. Defaults to https://api.saturday.fit.
-        timeout: Request timeout in seconds. Defaults to 30 for JSON requests and 60 for AI streams; an explicit value applies to both.
-        max_retries: Maximum retry attempts for transient failures. Defaults to 3.
-        bearer_token: OAuth2 Bearer token (alternative to API key).
+        api_key: A partner key (``sk_live_...`` or ``sk_test_...``) or a coach key (``cp_live_...`` or ``cp_test_...``).
+        base_url: Defaults to https://api.saturday.fit.
+        timeout: Per-request timeout in seconds. Defaults to 30.
+        max_retries: Retries for 5xx responses and for 429s whose ``Retry-After`` is 60 seconds or less. Defaults to 3; 0 disables retries.
+        bearer_token: An athlete's OAuth2 access token, sent in place of the API key.
 
     Example::
 
-        client = Saturday(api_key="sk_live_...")
-        rx = client.nutrition.calculate(
-            activity_type="run",
-            duration_min=90,
-            thermal_stress_level=8,
+        client = Saturday(api_key="sk_test_...")
+        athlete = client.athletes.create(external_id="user-42", sex="female", year_of_birth=1990, weight_kg=62)
+        plan = client.nutrition.calculate(
+            athlete_id=athlete["id"], activity_type="run", duration_min=90,
+            intensity_level=5, thermal_stress_level=6, meal_before_min=120, is_race=False,
         )
     """
 
@@ -81,37 +123,33 @@ class Saturday:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._timeout = DEFAULT_TIMEOUT if timeout is None else timeout
-        self._stream_timeout = DEFAULT_STREAM_TIMEOUT if timeout is None else timeout
         self._max_retries = max_retries
         self._bearer_token = bearer_token
 
-        headers = {
-            "User-Agent": f"saturday-python/{SDK_VERSION}",
-            "X-SDK-Version": SDK_VERSION,
-            "Content-Type": "application/json",
-        }
-        if bearer_token:
-            headers["Authorization"] = f"Bearer {bearer_token}"
-        else:
-            headers["Authorization"] = f"Bearer {api_key}"
-
         self._client = httpx.Client(
             base_url=self._base_url,
-            headers=headers,
+            headers={
+                "User-Agent": f"saturday-python/{SDK_VERSION}",
+                "X-SDK-Version": SDK_VERSION,
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {bearer_token or api_key}",
+            },
             timeout=self._timeout,
         )
 
-        # Resource accessors
         self.nutrition = _NutritionResource(self)
         self.athletes = _AthletesResource(self)
         self.activities = _ActivitiesResource(self)
-        self.products = _ProductsResource(self)
-        self.ai = _AIResource(self)
+        self.onboarding = _OnboardingResource(self)
+        self.reference = _ReferenceResource(self)
+        self.infer = _InferResource(self)
+        self.partner = _PartnerResource(self)
         self.webhooks = _WebhooksResource(self)
         self.organizations = _OrganizationsResource(self)
-        self.gear = _GearResource(self)
+        self.integrations = _IntegrationsResource(self)
+        self.testing = _TestingResource(self)
+        self.meta = _MetaResource(self)
         self.knowledge = _KnowledgeResource(self)
-        self.onboarding = _OnboardingResource(self)
         self.coach = _CoachResource(self)
 
     def close(self) -> None:
@@ -129,220 +167,203 @@ class Saturday:
         method: str,
         path: str,
         *,
-        json: Optional[Dict[str, Any]] = None,
+        json: Optional[Any] = None,
         params: Optional[Dict[str, Any]] = None,
         raw: bool = False,
     ) -> Any:
-        """Make an authenticated API request with automatic retry on 429/5xx."""
+        """Send an authenticated request.
+
+        A 5xx is retried after 1, 2 and 4 seconds; a 429 whose ``Retry-After`` is 60 seconds or
+        less is retried after that many seconds. Any other 429 (a daily ceiling has no
+        ``Retry-After``) and every other 4xx raise at once.
+        """
         last_error: Optional[SaturdayError] = None
 
         for attempt in range(self._max_retries + 1):
-            if attempt > 0:
-                delay = (2 ** (attempt - 1))
-                time.sleep(delay)
-
             try:
-                response = self._client.request(
-                    method,
-                    path,
-                    json=json,
-                    params=params,
-                )
-
-                if response.is_success:
-                    if response.status_code == 204:
-                        return None
-                    if raw:
-                        return response.content
-                    return response.json()
-
-                # Parse error
-                try:
-                    error_body = response.json()
-                except Exception:
-                    error_body = {"error": {"type": "api_error", "code": "unknown", "message": response.text}}
-
-                error = SaturdayError.from_response(response.status_code, error_body)
-                if isinstance(error, RateLimitError):
-                    try:
-                        error.retry_after = max(0, int(response.headers.get("Retry-After", "60")))
-                    except ValueError:
-                        pass
-                last_error = error
-
-                # Only retry on rate limit or server errors
-                if response.status_code == 429 or response.status_code >= 500:
-                    continue
-
-                raise error
-
+                response = self._client.request(method, path, json=json, params=params)
             except httpx.TimeoutException:
-                raise SaturdayError(
-                    message=f"Request timed out after {self._timeout}s",
-                    code="timeout",
-                )
-            except SaturdayError:
-                raise
+                raise SaturdayError(message=f"Request timed out after {self._timeout}s", code="timeout")
             except httpx.HTTPError as e:
                 raise SaturdayError(message=str(e), code="connection_error")
 
-        # All retries exhausted
-        if last_error:
-            raise last_error
-        raise SaturdayError(message="Max retries exceeded", code="max_retries_exceeded")
+            if response.is_success:
+                if response.status_code == 204:
+                    return None
+                return response.content if raw else response.json()
+
+            try:
+                error_body = response.json()
+            except Exception:
+                error_body = {"error": {"type": "api_error", "code": "unknown", "message": response.text or f"HTTP {response.status_code}"}}
+            error = SaturdayError.from_response(response.status_code, error_body, response.headers.get("Retry-After"))
+            last_error = error
+
+            if isinstance(error, RateLimitError):
+                if error.daily_limit or error.retry_after > MAX_RETRY_AFTER_S:
+                    raise error
+                delay: float = error.retry_after
+            elif response.status_code >= 500:
+                delay = 2 ** attempt
+            else:
+                raise error
+            if attempt < self._max_retries:
+                time.sleep(delay)
+
+        assert last_error is not None
+        raise last_error
 
 
-# --- Resource Classes ---
+# --- Resources ---
 
 
 class _NutritionResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def calculate(self, **kwargs: Any) -> NutritionCalculateResponse:
-        """Calculate a personalized fuel/hydration/electrolyte prescription."""
-        return self._client.request("POST", "/v1/nutrition/calculate", json=kwargs)
+    def calculate(self, **request: Any) -> NutritionCalculateResponse:
+        """Calculate a prescription for one session.
+
+        Required: ``activity_type``, ``duration_min``. Send ``athlete_id`` to use a stored
+        athlete, and ``meal_before_min`` (over 180 plans a fasted start) and ``is_race`` for
+        exact numbers. A field name close to a real one (``type``, ``weight_kg``,
+        ``is_race_event``) is refused with ``ValidationError`` code ``unsupported_field``.
+        """
+        return self._client.request("POST", "/v1/nutrition/calculate", json=request)
 
     def batch_calculate(self, scenarios: List[Dict[str, Any]]) -> BatchCalculateResponse:
-        """Batch calculate up to 50 scenarios; quota is charged per scenario."""
+        """Calculate up to 50 sessions. Each scenario counts as one call against your limits."""
         return self._client.request("POST", "/v1/nutrition/calculate/batch", json={"scenarios": scenarios})
 
+    def product_fit(self, **request: Any) -> ProductFitResponse:
+        """Size one catalog product against the athlete's prescription for a session.
 
-class _OnboardingResource:
-    """Athlete onboarding — the headless mechanism for collecting a fueling
-    profile in your own UI (API_OB).
-
-    ``questions()`` returns the versioned question schema (the same definitions
-    the hosted onboarding page renders); render it natively and write answers
-    via ``athletes.update_settings()`` or athlete create/update. Exact numbers
-    require a complete profile — every calculate response's ``precision`` object
-    tells you what is still missing::
-
-        rx = client.nutrition.calculate(activity_type="run", duration_min=90)
-        p = rx["precision"]
-        if not p["profile_complete"]:
-            for f in p["missing_fields"]:        # ask in the order they arrive
-                print(f["field"], f.get("band_impact"))  # absent with an OAuth access token
-            invite_url = p.get("onboarding", {}).get("url")  # athlete-scoped requests only
-
-    **Attribution is required** when you render these questions in your UI — the
-    schema response carries the ``attribution`` object, same contract as
-    calculations.
-    """
-
-    def __init__(self, client: Saturday):
-        self._client = client
-
-    def questions(self) -> Dict[str, Any]:
-        """Fetch the versioned onboarding question schema.
-
-        Returns ``{"schema_version", "questions": [...], "attribution": {...}}``.
-        Each question is ``{"field", "type" (single_select | multi_select |
-        year_of_birth | weight), "required", "title_en", "l10n_key"?,
-        "options"? [{"value", "label_en", "l10n_key"?, "pre_checked"?}],
-        "min"?, "max"?}``. Option scales are odd-point (e.g. {1, 5, 9}), not
-        continuous sliders — store the exact values given.
+        Required: ``athlete_id``, ``activity_type``, ``duration_min`` and ``product_id`` or
+        ``product_query``. Optional: ``intensity_level``, ``thermal_stress_level``,
+        ``meal_before_min``, ``is_race``.
         """
-        return self._client.request("GET", "/v1/onboarding/questions")
+        return self._client.request("POST", "/v1/nutrition/products/fit", json=request)
+
+    def compare_products(self, **request: Any) -> ProductCompareResponse:
+        """Size two products (``product_a``, ``product_b``: each ``{"product_id"}`` or ``{"product_query"}``) and name the better fit."""
+        return self._client.request("POST", "/v1/nutrition/products/compare", json=request)
+
+    def extract(self, **request: Any) -> Dict[str, Any]:
+        """Read a nutrition label from photos: ``image_base64`` or ``images_base64``."""
+        return self._client.request("POST", "/v1/nutrition/extract", json=request)
 
 
 class _AthletesResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def create(self, **kwargs: Any) -> Athlete:
-        """Create a new athlete under your partner account."""
-        return self._client.request("POST", "/v1/athletes", json=kwargs)
+    def create(self, **athlete: Any) -> Athlete:
+        """Create an athlete. At least one of ``name``, ``email`` or ``external_id`` is required."""
+        return self._client.request("POST", "/v1/athletes", json=athlete)
 
     def get(self, athlete_id: str) -> Athlete:
-        """Get an athlete by ID."""
-        return self._client.request("GET", f"/v1/athletes/{athlete_id}")
+        return self._client.request("GET", f"/v1/athletes/{_seg(athlete_id)}")
 
-    def list(self, *, limit: int = 50, cursor: Optional[str] = None, search: Optional[str] = None) -> AthleteListResponse:
-        """List athletes for your partner account.
+    def list(
+        self,
+        *,
+        limit: int = 50,
+        cursor: Optional[str] = None,
+        external_id: Optional[str] = None,
+        profile_complete: Optional[bool] = None,
+    ) -> AthleteListResponse:
+        """One page of athletes. Pass ``pagination["next_cursor"]`` back as ``cursor``."""
+        return self._client.request("GET", "/v1/athletes", params=_params(
+            limit=limit, cursor=cursor, external_id=external_id, profile_complete=profile_complete,
+        ))
 
-        The array is under ``athletes``. Read ``pagination.has_more`` and pass
-        ``pagination.next_cursor`` back as ``cursor`` for the next page.
-        The legacy ``search`` argument is currently ignored by the API.
-        """
-        params: Dict[str, Any] = {"limit": limit}
-        if cursor:
-            params["cursor"] = cursor
-        if search:
-            params["search"] = search
-        return self._client.request("GET", "/v1/athletes", params=params)
-
-    def update(self, athlete_id: str, **kwargs: Any) -> Athlete:
-        """Partially update an athlete's profile."""
-        return self._client.request("PATCH", f"/v1/athletes/{athlete_id}", json=kwargs)
+    def update(self, athlete_id: str, **updates: Any) -> Athlete:
+        """Update the fields you send. Settings sent here replace the stored settings."""
+        return self._client.request("PATCH", f"/v1/athletes/{_seg(athlete_id)}", json=updates)
 
     def delete(self, athlete_id: str) -> None:
-        """Delete an athlete and all associated data."""
-        self._client.request("DELETE", f"/v1/athletes/{athlete_id}")
+        """Delete the athlete record. To erase everything stored for the athlete, use ``erase``."""
+        self._client.request("DELETE", f"/v1/athletes/{_seg(athlete_id)}")
 
     def get_settings(self, athlete_id: str) -> AthleteSettings:
-        """Get an athlete's fueling preference settings."""
-        return self._client.request("GET", f"/v1/athletes/{athlete_id}/settings")
+        return self._client.request("GET", f"/v1/athletes/{_seg(athlete_id)}/settings")
+
+    def update_settings(self, athlete_id: str, **settings: Any) -> AthleteSettings:
+        """Replace the athlete's settings. Send every setting you want kept: omitted ones are cleared."""
+        return self._client.request("PATCH", f"/v1/athletes/{_seg(athlete_id)}/settings", json=settings)
 
     def get_fueling_profile(self, athlete_id: str) -> FuelingProfile:
-        """The athlete's Saturday app answers, while they share them with you.
-
-        Check ``sharing`` first: only ``"on"`` carries ``profile`` and ``updated_at``;
-        ``"off"`` and ``"not_linked"`` carry a ``message`` saying why there are none.
-        """
-        return self._client.request("GET", f"/v1/athletes/{athlete_id}/fueling-profile")
-
-    def update_settings(self, athlete_id: str, **kwargs: Any) -> AthleteSettings:
-        """Replace partner-managed athlete settings; send the complete intended settings."""
-        return self._client.request("PATCH", f"/v1/athletes/{athlete_id}/settings", json=kwargs)
+        """The athlete's Saturday app answers while they share them with you. Check ``sharing``:
+        only ``on`` carries ``profile``; ``off`` and ``not_linked`` carry ``message``."""
+        return self._client.request("GET", f"/v1/athletes/{_seg(athlete_id)}/fueling-profile")
 
     def batch_create(self, athletes: List[Dict[str, Any]]) -> BatchAthleteResponse:
-        """Batch create up to 100 athletes; quota is charged per athlete."""
+        """Create up to 100 athletes in one call."""
         return self._client.request("POST", "/v1/athletes/batch", json={"athletes": athletes})
 
-    def export(self, athlete_id: str) -> Dict[str, Any]:
-        """Export all athlete data (GDPR data portability)."""
-        return self._client.request("POST", f"/v1/athletes/{athlete_id}/export")
+    def export(self, athlete_id: str) -> AthleteDataExport:
+        """Everything Saturday holds for the athlete under your account (data portability)."""
+        return self._client.request("POST", f"/v1/athletes/{_seg(athlete_id)}/export")
+
+    def erase(self, athlete_id: str) -> None:
+        """Erase the athlete and everything stored for them under your account (right to erasure)."""
+        self._client.request("POST", f"/v1/athletes/{_seg(athlete_id)}/delete")
+
+    def list_consent(self, athlete_id: str) -> ConsentListResponse:
+        return self._client.request("GET", f"/v1/athletes/{_seg(athlete_id)}/consent")
+
+    def record_consent(self, athlete_id: str, *, consent_type: str, granted: bool) -> ConsentRecord:
+        """``consent_type``: ``data_processing``, ``marketing`` or ``analytics``."""
+        return self._client.request(
+            "POST", f"/v1/athletes/{_seg(athlete_id)}/consent", json={"consent_type": consent_type, "granted": granted}
+        )
+
+    def revoke_consent(self, athlete_id: str, consent_id: str) -> None:
+        self._client.request("DELETE", f"/v1/athletes/{_seg(athlete_id)}/consent/{_seg(consent_id)}")
 
 
 class _ActivitiesResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def create(self, athlete_id: str, **kwargs: Any) -> Activity:
-        """Create a new activity for an athlete."""
-        return self._client.request("POST", f"/v1/athletes/{athlete_id}/activities", json=kwargs)
+    def create(self, athlete_id: str, **activity: Any) -> Activity:
+        """Store a session. The fields are ``type`` and ``is_race_event``; ``activity_type`` and
+        ``is_race`` are refused with ``ValidationError`` code ``unsupported_field``."""
+        return self._client.request("POST", f"/v1/athletes/{_seg(athlete_id)}/activities", json=activity)
 
     def get(self, athlete_id: str, activity_id: str) -> Activity:
-        """Get an activity by ID."""
-        return self._client.request("GET", f"/v1/athletes/{athlete_id}/activities/{activity_id}")
+        return self._client.request("GET", f"/v1/athletes/{_seg(athlete_id)}/activities/{_seg(activity_id)}")
 
     def list(self, athlete_id: str, *, limit: int = 20, cursor: Optional[str] = None) -> ActivityListResponse:
-        """List activities for an athlete.
+        """One page of the athlete's activities. Pass ``pagination["next_cursor"]`` back as ``cursor``."""
+        return self._client.request(
+            "GET", f"/v1/athletes/{_seg(athlete_id)}/activities", params=_params(limit=limit, cursor=cursor)
+        )
 
-        The array is under ``activities``. Read ``pagination.has_more`` and pass
-        ``pagination.next_cursor`` back as ``cursor`` for the next page.
-        """
-        params: Dict[str, Any] = {"limit": limit}
-        if cursor:
-            params["cursor"] = cursor
-        return self._client.request("GET", f"/v1/athletes/{athlete_id}/activities", params=params)
-
-    def update(self, athlete_id: str, activity_id: str, **kwargs: Any) -> Activity:
-        """Partially update an activity."""
-        return self._client.request("PATCH", f"/v1/athletes/{athlete_id}/activities/{activity_id}", json=kwargs)
+    def update(self, athlete_id: str, activity_id: str, **updates: Any) -> Activity:
+        return self._client.request("PATCH", f"/v1/athletes/{_seg(athlete_id)}/activities/{_seg(activity_id)}", json=updates)
 
     def delete(self, athlete_id: str, activity_id: str) -> None:
-        """Delete an activity and its prescription."""
-        self._client.request("DELETE", f"/v1/athletes/{athlete_id}/activities/{activity_id}")
+        self._client.request("DELETE", f"/v1/athletes/{_seg(athlete_id)}/activities/{_seg(activity_id)}")
 
     def calculate_prescription(self, athlete_id: str, activity_id: str) -> PrescriptionEnvelope:
-        """Calculate/recalculate a nutrition prescription for this activity."""
-        return self._client.request("POST", f"/v1/athletes/{athlete_id}/activities/{activity_id}/calculate")
+        """Calculate the activity's prescription and store it."""
+        return self._client.request("POST", f"/v1/athletes/{_seg(athlete_id)}/activities/{_seg(activity_id)}/calculate")
 
     def get_prescription(self, athlete_id: str, activity_id: str) -> StoredPrescriptionResponse:
-        """Get the stored prescription for an activity."""
-        return self._client.request("GET", f"/v1/athletes/{athlete_id}/activities/{activity_id}/prescription")
+        """The stored prescription. ``NotFoundError`` until the activity has been calculated."""
+        return self._client.request("GET", f"/v1/athletes/{_seg(athlete_id)}/activities/{_seg(activity_id)}/prescription")
+
+    def prep(self, athlete_id: str, activity_id: str, *, products: Optional[List[Dict[str, Any]]] = None) -> PrepResponse:
+        """Size catalog products against the activity's prescription and show the gap left.
+
+        Each product is ``{"product_id"}`` or ``{"product_query"}``, with optional ``servings``
+        over the whole activity; without ``servings`` Saturday sizes it to what the plan still
+        needs, in list order.
+        """
+        return self._client.request(
+            "POST", f"/v1/athletes/{_seg(athlete_id)}/activities/{_seg(activity_id)}/prep", json={"products": products or []}
+        )
 
     def import_activities(
         self,
@@ -351,201 +372,267 @@ class _ActivitiesResource:
         *,
         calculate: Optional[bool] = None,
     ) -> ActivityImportResponse:
-        """Import up to 200 activities; calculation is opt-in and quota is per activity."""
+        """Import up to 200 activities. ``calculate=True`` calculates every one; an item's own
+        ``"calculate": True`` calculates that item even when the request-level option is false."""
         payload: Dict[str, Any] = {"activities": activities}
         if calculate is not None:
             payload["calculate"] = calculate
-        return self._client.request("POST", f"/v1/athletes/{athlete_id}/activities/import", json=payload)
+        return self._client.request("POST", f"/v1/athletes/{_seg(athlete_id)}/activities/import", json=payload)
 
-    def submit_feedback(self, athlete_id: str, activity_id: str, **kwargs: Any) -> ActivityFeedback:
-        """Submit post-activity feedback on prescription quality."""
-        return self._client.request("POST", f"/v1/athletes/{athlete_id}/activities/{activity_id}/feedback", json=kwargs)
+    def submit_feedback(self, athlete_id: str, activity_id: str, *, rating: int, notes: Optional[str] = None) -> ActivityFeedback:
+        """``rating``: 1 (poor) to 5 (excellent)."""
+        body: Dict[str, Any] = {"rating": rating}
+        if notes is not None:
+            body["notes"] = notes
+        return self._client.request("POST", f"/v1/athletes/{_seg(athlete_id)}/activities/{_seg(activity_id)}/feedback", json=body)
 
 
-class _ProductsResource:
-    """Saturday's curated product catalog.
-
-    Every method takes ``athlete_id``: the catalog opens on that athlete's
-    Saturday subscription, not on your partner account. A subscribed athlete (or
-    one inside their 30-day trial) gets ``tier: "full"`` with products; anyone
-    else gets ``tier: "teaser"`` with empty product lists plus the category
-    taxonomy and a subscribe CTA. Both are 200. Branch on ``tier``.
-    """
+class _OnboardingResource:
+    """The headless onboarding schema: the questions the hosted page asks. Render them in your
+    UI, write the answers with ``athletes.update`` or ``athletes.update_settings``, and show the
+    response's ``attribution`` with them."""
 
     def __init__(self, client: Saturday):
         self._client = client
 
-    def get_by_barcode(self, barcode: str, athlete_id: str) -> Dict[str, Any]:
-        """Look up a curated product by barcode, on behalf of an athlete."""
-        return self._client.request(
-            "GET", f"/v1/products/{barcode}", params={"athlete_id": athlete_id}
-        )
-
-    def search(self, query: str, athlete_id: str) -> Dict[str, Any]:
-        """Search the curated catalog, matched across name, brand, type, and keywords."""
-        return self._client.request(
-            "GET", "/v1/products/search", params={"q": query, "athlete_id": athlete_id}
-        )
-
-    def list_curated(self, athlete_id: str, *, cursor: Optional[str] = None) -> Dict[str, Any]:
-        """Page through Saturday's curated catalog (10 per page).
-
-        Pass the ``next_cursor`` from the previous response to advance.
-        """
-        params: Dict[str, Any] = {"athlete_id": athlete_id}
-        if cursor:
-            params["cursor"] = cursor
-        return self._client.request("GET", "/v1/products/curated", params=params)
-
-    def list_categories(self, athlete_id: str) -> Dict[str, Any]:
-        """List the product taxonomy. Free for every athlete."""
-        return self._client.request(
-            "GET", "/v1/products/categories", params={"athlete_id": athlete_id}
-        )
+    def questions(self) -> OnboardingQuestionsResponse:
+        return self._client.request("GET", "/v1/onboarding/questions")
 
 
-class _AIResource:
+class _ReferenceResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def create_conversation(self, athlete_id: str, initial_message: Optional[str] = None) -> Dict[str, Any]:
-        """Deprecated: use async create_conversation_stream; sends no request."""
-        raise AIStreamError("streaming_required", "Use async with ai.create_conversation_stream(athlete_id, message) and consume every event. No request was sent.")
+    def activity_types(self) -> ActivityTypesResponse:
+        return self._client.request("GET", "/v1/activity-types")
 
-    def send_message(self, conv_id: str, message: str) -> Dict[str, Any]:
-        """Deprecated: use async send_message_stream; sends no request."""
-        raise AIStreamError("streaming_required", "Use async with ai.send_message_stream(conv_id, message) and consume every event. No request was sent.")
+    def settings_schema(self) -> SettingsSchemaResponse:
+        return self._client.request("GET", "/v1/settings/schema")
 
-    def create_conversation_stream(self, athlete_id: str, message: str, *, timeout: Optional[float] = None) -> AsyncContextManager[AsyncIterator[AIStreamEvent]]:
-        """Async context manager for a single-attempt AI POST with a total deadline: the client timeout, else 60 s."""
-        return stream_ai(self._client._base_url, dict(self._client._client.headers), "/v1/ai/conversations",
-                         {"athlete_id": athlete_id, "message": message}, self._client._stream_timeout if timeout is None else timeout)
 
-    def send_message_stream(self, conv_id: str, message: str, *, timeout: Optional[float] = None) -> AsyncContextManager[AsyncIterator[AIStreamEvent]]:
-        """Async context manager preserving all events, including errors and warnings; the deadline is the client timeout, else 60 s."""
-        return stream_ai(self._client._base_url, dict(self._client._client.headers), f"/v1/ai/conversations/{quote(conv_id, safe='')}/messages",
-                         {"message": message}, self._client._stream_timeout if timeout is None else timeout)
+class _InferResource:
+    def __init__(self, client: Saturday):
+        self._client = client
 
-    def get_messages(self, conv_id: str, *, limit: int = 50) -> Dict[str, Any]:
-        """Get stored JSON history; the server ignores the legacy limit argument."""
-        return self._client.request("GET", f"/v1/ai/conversations/{conv_id}/messages", params={"limit": limit})
+    def activity_type(self, **workout: Any) -> Dict[str, Any]:
+        """Map a workout from your system (``activity_name``, ``tags``, ``device``...) to a Saturday activity type."""
+        return self._client.request("POST", "/v1/infer/activity-type", json=workout)
 
-    def get_conversation(self, conv_id: str) -> Dict[str, Any]:
-        """Get conversation metadata."""
-        return self._client.request("GET", f"/v1/ai/conversations/{conv_id}")
+    def brick_types(self, **workout: Any) -> Dict[str, Any]:
+        """Split a multisport workout into its legs."""
+        return self._client.request("POST", "/v1/infer/brick-types", json=workout)
 
-    def delete_conversation(self, conv_id: str) -> None:
-        """Delete a conversation."""
-        self._client.request("DELETE", f"/v1/ai/conversations/{conv_id}")
 
-    def list_conversations(self, athlete_id: str, *, limit: int = 20) -> Dict[str, Any]:
-        """List conversations for an athlete."""
-        return self._client.request("GET", f"/v1/athletes/{athlete_id}/ai/conversations", params={"limit": limit})
+class _PartnerResource:
+    def __init__(self, client: Saturday):
+        self._client = client
+
+    def get(self) -> PartnerAccount:
+        """Your account and its limits."""
+        return self._client.request("GET", "/v1/partner")
+
+    def usage(self, *, from_date: Optional[str] = None, to_date: Optional[str] = None) -> UsageResponse:
+        """Calls over a period (``YYYY-MM-DD``, UTC), 30 days by default."""
+        return self._client.request("GET", "/v1/partner/usage", params=_params(**{"from": from_date, "to": to_date}))
+
+    def usage_daily(self, *, from_date: Optional[str] = None, to_date: Optional[str] = None) -> DailyUsageResponse:
+        """Calls per UTC day, 7 days by default."""
+        return self._client.request("GET", "/v1/partner/usage/daily", params=_params(**{"from": from_date, "to": to_date}))
+
+    def list_api_keys(self) -> ApiKeyListResponse:
+        return self._client.request("GET", "/v1/partner/api-keys")
+
+    def create_api_key(self, name: str, *, scopes: Optional[List[str]] = None) -> CreatedApiKey:
+        """Create a key. The response's ``key`` is shown once."""
+        body: Dict[str, Any] = {"name": name}
+        if scopes is not None:
+            body["scopes"] = scopes
+        return self._client.request("POST", "/v1/partner/api-keys", json=body)
+
+    def revoke_api_key(self, key_id: str) -> None:
+        self._client.request("DELETE", f"/v1/partner/api-keys/{_seg(key_id)}")
+
+    def rotate_api_key(self, key_id: str) -> RotatedApiKey:
+        """Replace a key with a new one and revoke the old one at once."""
+        return self._client.request("POST", f"/v1/partner/api-keys/{_seg(key_id)}/rotate")
 
 
 class _WebhooksResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def create(self, url: str, events: List[str], description: Optional[str] = None) -> Dict[str, Any]:
-        """Register a webhook endpoint."""
-        body: Dict[str, Any] = {"url": url, "events": events}
-        if description:
-            body["description"] = description
-        return self._client.request("POST", "/v1/webhooks", json=body)
+    def create(self, url: str, events: List[str]) -> CreateWebhookResponse:
+        """Register an endpoint. ``response["webhook"]["secret"]`` is shown once."""
+        return self._client.request("POST", "/v1/webhooks", json={"url": url, "events": events})
 
-    def list(self) -> Dict[str, Any]:
-        """List registered webhooks."""
+    def list(self) -> WebhookListResponse:
         return self._client.request("GET", "/v1/webhooks")
 
-    def get(self, webhook_id: str) -> Dict[str, Any]:
-        """Get webhook details."""
-        return self._client.request("GET", f"/v1/webhooks/{webhook_id}")
+    def get(self, webhook_id: str) -> Webhook:
+        return self._client.request("GET", f"/v1/webhooks/{_seg(webhook_id)}")
 
-    def update(self, webhook_id: str, **kwargs: Any) -> Dict[str, Any]:
-        """Update a webhook."""
-        return self._client.request("PATCH", f"/v1/webhooks/{webhook_id}", json=kwargs)
+    def update(self, webhook_id: str, *, url: Optional[str] = None, events: Optional[List[str]] = None, active: Optional[bool] = None) -> Webhook:
+        body = {k: v for k, v in {"url": url, "events": events, "active": active}.items() if v is not None}
+        return self._client.request("PATCH", f"/v1/webhooks/{_seg(webhook_id)}", json=body)
 
     def delete(self, webhook_id: str) -> None:
-        """Delete a webhook."""
-        self._client.request("DELETE", f"/v1/webhooks/{webhook_id}")
+        self._client.request("DELETE", f"/v1/webhooks/{_seg(webhook_id)}")
 
     def test(self, webhook_id: str) -> Dict[str, Any]:
-        """Send a test event."""
-        return self._client.request("POST", f"/v1/webhooks/{webhook_id}/test")
+        """Send a ``webhook.test`` event to the endpoint now."""
+        return self._client.request("POST", f"/v1/webhooks/{_seg(webhook_id)}/test")
+
+    def deliveries(self, webhook_id: str) -> WebhookDeliveriesResponse:
+        """Recent delivery attempts to the endpoint, newest first."""
+        return self._client.request("GET", f"/v1/webhooks/{_seg(webhook_id)}/deliveries")
 
 
 class _OrganizationsResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def create(self, display_name: str, **kwargs: Any) -> Dict[str, Any]:
-        """Create an organization."""
-        return self._client.request("POST", "/v1/organizations", json={"display_name": display_name, **kwargs})
+    def create(self, display_name: str, *, description: Optional[str] = None, sport: Optional[str] = None) -> Organization:
+        body = {k: v for k, v in {"display_name": display_name, "description": description, "sport": sport}.items() if v is not None}
+        return self._client.request("POST", "/v1/organizations", json=body)
 
-    def list(self) -> Dict[str, Any]:
-        """List organizations."""
+    def list(self) -> OrganizationListResponse:
         return self._client.request("GET", "/v1/organizations")
 
-    def get(self, org_id: str) -> Dict[str, Any]:
-        """Get organization details."""
-        return self._client.request("GET", f"/v1/organizations/{org_id}")
+    def get(self, org_id: str) -> Organization:
+        return self._client.request("GET", f"/v1/organizations/{_seg(org_id)}")
 
-    def add_member(self, org_id: str, email: str, role: str, athlete_id: Optional[str] = None) -> Dict[str, Any]:
-        """Add a member to an organization."""
+    def update(self, org_id: str, **updates: Any) -> Organization:
+        """Update ``display_name``, ``description`` or ``sport``."""
+        return self._client.request("PATCH", f"/v1/organizations/{_seg(org_id)}", json=updates)
+
+    def add_member(self, org_id: str, email: str, *, role: str = "member", athlete_id: Optional[str] = None) -> OrganizationMember:
         body: Dict[str, Any] = {"email": email, "role": role}
         if athlete_id:
             body["athlete_id"] = athlete_id
-        return self._client.request("POST", f"/v1/organizations/{org_id}/members", json=body)
+        return self._client.request("POST", f"/v1/organizations/{_seg(org_id)}/members", json=body)
 
-    def list_members(self, org_id: str) -> Dict[str, Any]:
-        """List organization members."""
-        return self._client.request("GET", f"/v1/organizations/{org_id}/members")
+    def list_members(self, org_id: str) -> OrganizationMembersResponse:
+        return self._client.request("GET", f"/v1/organizations/{_seg(org_id)}/members")
 
     def remove_member(self, org_id: str, member_id: str) -> None:
-        """Remove a member from an organization."""
-        self._client.request("DELETE", f"/v1/organizations/{org_id}/members/{member_id}")
+        self._client.request("DELETE", f"/v1/organizations/{_seg(org_id)}/members/{_seg(member_id)}")
+
+    def set_offer(self, org_id: str, *, discount_percent: int, **options: Any) -> OrganizationOffer:
+        """Set the organization's checkout discount (1 to 30 percent), replacing any active one.
+
+        Options: ``applies_to_plan`` (``12_month`` or ``1_month``), ``negotiated_by``,
+        ``starts_at`` and ``ends_at`` (Unix seconds), ``note``.
+        """
+        return self._client.request("PUT", f"/v1/organizations/{_seg(org_id)}/offer", json={"discount_percent": discount_percent, **options})
+
+    def get_offer(self, org_id: str) -> OrganizationOffer:
+        """The active offer. ``NotFoundError`` (``org_offer_not_found``) when there is none."""
+        return self._client.request("GET", f"/v1/organizations/{_seg(org_id)}/offer")
+
+    def delete_offer(self, org_id: str) -> None:
+        self._client.request("DELETE", f"/v1/organizations/{_seg(org_id)}/offer")
+
+    def create_subscription(self, org_id: str, *, type: str, seats: int, start_date: int, end_date: int) -> OrganizationSubscription:
+        """Create a seat subscription (dates in Unix milliseconds). Seat subscriptions are set up
+        with Saturday: without an allowance on your account this raises ``PermissionError``
+        (``organization_subscription_restricted``)."""
+        return self._client.request(
+            "POST", f"/v1/organizations/{_seg(org_id)}/subscriptions",
+            json={"type": type, "seats": seats, "start_date": start_date, "end_date": end_date},
+        )
+
+    def list_subscriptions(self, org_id: str) -> OrganizationSubscriptionListResponse:
+        return self._client.request("GET", f"/v1/organizations/{_seg(org_id)}/subscriptions")
+
+    def update_subscription(self, org_id: str, sub_id: str, **updates: Any) -> OrganizationSubscription:
+        """Update ``seats``, ``status`` or ``end_date``."""
+        return self._client.request("PATCH", f"/v1/organizations/{_seg(org_id)}/subscriptions/{_seg(sub_id)}", json=updates)
+
+    def add_licenses(self, org_id: str, sub_id: str, licenses: List[Dict[str, Any]]) -> LicenseListResponse:
+        """License athletes (``{"athlete_id", "email"?, "name"?}``) on a seat subscription."""
+        return self._client.request(
+            "POST", f"/v1/organizations/{_seg(org_id)}/subscriptions/{_seg(sub_id)}/licenses", json={"licenses": licenses}
+        )
+
+    def list_licenses(self, org_id: str, sub_id: str) -> LicenseListResponse:
+        return self._client.request("GET", f"/v1/organizations/{_seg(org_id)}/subscriptions/{_seg(sub_id)}/licenses")
+
+    def remove_license(self, org_id: str, sub_id: str, athlete_id: str) -> None:
+        self._client.request(
+            "DELETE", f"/v1/organizations/{_seg(org_id)}/subscriptions/{_seg(sub_id)}/licenses/{_seg(athlete_id)}"
+        )
 
 
-class _GearResource:
+class _IntegrationsResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def list(self, athlete_id: str) -> Dict[str, Any]:
-        """List athlete's gear."""
-        return self._client.request("GET", f"/v1/athletes/{athlete_id}/gear")
+    def sync(self, provider: str, *, athlete_id: str, access_token: str, **options: Any) -> IntegrationSyncResponse:
+        """Pull the athlete's activities from the provider (``strava``) into Saturday.
 
-    def create(self, athlete_id: str, **kwargs: Any) -> Dict[str, Any]:
-        """Add a gear item."""
-        return self._client.request("POST", f"/v1/athletes/{athlete_id}/gear", json=kwargs)
+        Options: ``refresh_token``, ``sync_types``, ``date_range`` (``{"from", "to"}``).
+        """
+        return self._client.request(
+            "POST", f"/v1/integrations/{_seg(provider)}/sync",
+            json={"athlete_id": athlete_id, "access_token": access_token, **options},
+        )
 
-    def update(self, athlete_id: str, gear_id: str, **kwargs: Any) -> Dict[str, Any]:
-        """Update a gear item."""
-        return self._client.request("PATCH", f"/v1/athletes/{athlete_id}/gear/{gear_id}", json=kwargs)
+    def status(self, provider: str, athlete_id: str) -> IntegrationStatusResponse:
+        return self._client.request("GET", f"/v1/integrations/{_seg(provider)}/status", params={"athlete_id": athlete_id})
 
-    def delete(self, athlete_id: str, gear_id: str) -> None:
-        """Delete a gear item."""
-        self._client.request("DELETE", f"/v1/athletes/{athlete_id}/gear/{gear_id}")
+    def disconnect(self, provider: str, athlete_id: str) -> Dict[str, Any]:
+        return self._client.request("POST", f"/v1/integrations/{_seg(provider)}/disconnect", json={"athlete_id": athlete_id})
+
+
+class _TestingResource:
+    """Test environment only (``sk_test_`` keys). In production these routes answer 404."""
+
+    def __init__(self, client: Saturday):
+        self._client = client
+
+    def simulate_subscription(self, athlete_id: str, *, active: bool = True) -> SimulateSubscriptionResponse:
+        """Give the athlete a simulated Saturday subscription (``active=True``) or take it away."""
+        return self._client.request(
+            "POST", f"/v1/test/athletes/{_seg(athlete_id)}/simulate-subscription", json={"active": active}
+        )
+
+
+class _MetaResource:
+    def __init__(self, client: Saturday):
+        self._client = client
+
+    def discovery(self) -> Dict[str, Any]:
+        """The routes and features this key can see."""
+        return self._client.request("GET", "/v1/")
+
+    def errors(self) -> ErrorCatalogResponse:
+        """Every error code the API can return, with its HTTP status and whether a retry can succeed."""
+        return self._client.request("GET", "/v1/errors")
+
+    def health(self) -> HealthResponse:
+        return self._client.request("GET", "/v1/health")
 
 
 class _KnowledgeResource:
+    """Early access: a key without access gets ``PermissionError`` (``feature_alpha``)."""
+
     def __init__(self, client: Saturday):
         self._client = client
 
-    def search(self, query: str, *, limit: int = 5, category: Optional[str] = None) -> Dict[str, Any]:
-        """Search the nutrition knowledge base."""
-        body: Dict[str, Any] = {"query": query, "limit": limit}
+    def search(self, query: str, *, limit: Optional[int] = None, category: Optional[str] = None) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"query": query}
+        if limit is not None:
+            body["limit"] = limit
         if category:
             body["category"] = category
         return self._client.request("POST", "/v1/knowledge/search", json=body)
 
     def list_topics(self) -> Dict[str, Any]:
-        """List knowledge base topics."""
         return self._client.request("GET", "/v1/knowledge/topics")
 
     def get_article(self, article_id: str) -> Dict[str, Any]:
-        """Get a knowledge article."""
-        return self._client.request("GET", f"/v1/knowledge/articles/{article_id}")
+        return self._client.request("GET", f"/v1/knowledge/articles/{_seg(article_id)}")
+
 
 class _CoachResource:
     """Coach API — ``/v1/coach/*`` (Module 5).

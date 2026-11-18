@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from saturday import NotFoundError, RateLimitError, Saturday
+from saturday import NotFoundError, PermissionDeniedError, RateLimitError, Saturday
 
 
 @pytest.fixture
@@ -76,8 +76,8 @@ def test_rate_limit_preserves_retry_after(make_client):
     assert raised.value.retry_after == 17
 
 
-@pytest.mark.parametrize("header, expected", [(None, 60), ("invalid", 60), ("-1", 0)])
-def test_rate_limit_retry_after_fallback(make_client, header, expected):
+@pytest.mark.parametrize("header, expected", [(None, None), ("invalid", None), ("-1", 0)])
+def test_rate_limit_retry_after_parsing(make_client, header, expected):
     headers = {} if header is None else {"Retry-After": header}
     client = make_client(lambda _: httpx.Response(429, json={
         "error": {"message": "Slow down"},
@@ -85,6 +85,55 @@ def test_rate_limit_retry_after_fallback(make_client, header, expected):
     with pytest.raises(RateLimitError) as raised:
         client.onboarding.questions()
     assert raised.value.retry_after == expected
+    assert raised.value.daily_limit is (expected is None)
+
+
+def test_waits_retry_after_then_retries(make_client, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("saturday.client.time.sleep", sleeps.append)
+    responses = iter([
+        httpx.Response(429, json={"error": {"code": "rate_limit_exceeded", "message": "Retry after 2 seconds."}}, headers={"Retry-After": "2"}),
+        httpx.Response(200, json={"activity_types": [], "total": 0, "request_id": "req_1"}),
+    ])
+    client = make_client(lambda _: next(responses))
+    assert client.reference.activity_types()["total"] == 0
+    assert sleeps == [2]
+
+
+def test_daily_ceiling_raises_at_once(make_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr("saturday.client.time.sleep", lambda _: pytest.fail("a daily ceiling must not be retried"))
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(429, json={"error": {"type": "rate_limit_error", "code": "rate_limit_exceeded",
+                                                   "message": "Daily call limit reached (2000/day)."}})
+
+    client = make_client(handler)
+    with pytest.raises(RateLimitError) as raised:
+        client.nutrition.calculate(activity_type="run", duration_min=60)
+    assert raised.value.daily_limit
+    assert len(calls) == 1
+
+
+def test_long_retry_after_is_raised_not_waited(make_client, monkeypatch):
+    monkeypatch.setattr("saturday.client.time.sleep", lambda _: pytest.fail("a 17-minute wait must not be slept"))
+    client = make_client(lambda _: httpx.Response(429, json={
+        "error": {"code": "rate_limited", "message": "New products resume in 17 minutes."},
+    }, headers={"Retry-After": "1020"}))
+    with pytest.raises(RateLimitError) as raised:
+        client.nutrition.product_fit(athlete_id="ath_1", product_query="maurten gel 100", activity_type="run", duration_min=60)
+    assert raised.value.retry_after == 1020
+    assert not raised.value.daily_limit
+
+
+def test_403_is_permission_denied(make_client):
+    client = make_client(lambda _: httpx.Response(403, json={
+        "error": {"type": "authorization_error", "code": "feature_alpha", "message": "The knowledge feature is in alpha."},
+    }))
+    with pytest.raises(PermissionDeniedError) as raised:
+        client.knowledge.search("sodium")
+    assert raised.value.code == "feature_alpha"
 
 
 def test_empty_response(make_client):

@@ -1,6 +1,28 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (unreleased)
+
+Breaking changes:
+
+- `products`, `gear` and `ai` are removed, with their types, `AIStreamError` and `AIStreamEvent`. Those routes are not open to partner keys.
+- `webhooks.create(url, events)` returns `CreateWebhookResponse`: the webhook, with its signing secret, is under `webhook`. The `description` argument is gone; the API does not take one.
+- `webhooks.update` takes `url`, `events` and `active` as keyword arguments; `organizations.add_member` takes `role` and `athlete_id` as keyword arguments; `activities.submit_feedback` takes `rating` and `notes`.
+- `athletes.list` drops the `search` argument, which the API ignored, and gains `external_id` and `profile_complete` filters.
+- A 429 without `Retry-After` is a daily ceiling: it is no longer retried, `RateLimitError.daily_limit` is True and `retry_after` is `None`. A `Retry-After` over 60 seconds is raised to you, not waited out. 5xx retries wait 1, 2 and 4 seconds as before.
+- 403 responses raise the new `PermissionDeniedError`.
+- `ActivityPrescription`'s six numbers are optional: a prescription stored as ranges (`profile_complete` false) carries none of them.
+
+Added:
+
+- `nutrition.product_fit`, `nutrition.compare_products` and `activities.prep`, with `PlanBasis` for plans made from the middle of an incomplete profile's ranges.
+- `nutrition.extract` (nutrition label reading), `infer.activity_type`, `infer.brick_types`, `reference.activity_types`, `reference.settings_schema`.
+- `athletes.erase` (`POST /v1/athletes/{id}/delete`), `athletes.list_consent`, `record_consent`, `revoke_consent`.
+- `partner.get`, `usage`, `usage_daily`, `list_api_keys`, `create_api_key`, `revoke_api_key`, `rotate_api_key`.
+- `webhooks.deliveries`; `organizations.update`, offers and seat subscriptions with licenses; `integrations.sync`, `status`, `disconnect`; `testing.simulate_subscription`; `meta.discovery`, `errors`, `health`.
+- TypedDicts for every new response, and `OnboardingQuestionsResponse` for `onboarding.questions`.
+- A live suite (`tests/test_live.py`) and a check of its recorded responses against the types.
+
+Earlier unreleased changes:
 
 - Add `athletes.get_fueling_profile(athlete_id)` for `GET /v1/athletes/{id}/fueling-profile`: the athlete's Saturday app answers while they share them with you, typed as `FuelingProfile`. `profile` (`FuelingProfileAnswers`, each answer with `value` and `calculations_use`) and `updated_at` are present only when `sharing` is `"on"`; `"off"` and `"not_linked"` carry `message`. `Athlete` gains the optional `profile_sharing` (`ProfileSharing`: `on`, `off` or `not_linked`), returned by `athletes.get`.
 - Add webhook body types: `WebhookEvent`, `WebhookEventType` (the names registration accepts), and `ProfileSharingChangedEvent` and `FuelingProfileUpdatedEvent` for `athlete.profile_sharing_changed` and `athlete.fueling_profile_updated`, whose data is the athlete record (the second adds `changed_fields`, typed `FuelingProfileFieldName`).

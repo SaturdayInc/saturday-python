@@ -1,16 +1,15 @@
 """
-Typed error classes for Saturday API errors.
-
-All errors follow the Stripe-style format with type, code, message,
-and optional param/documentation_url fields.
+Typed errors. Every API error carries ``status``, ``code``, ``message``, ``error_type`` and,
+when the API sets them, ``param`` and ``request_id``.
 """
 
 from __future__ import annotations
-from typing import Optional
+
+from typing import Any, Dict, Optional
 
 
 class SaturdayError(Exception):
-    """Base error for all Saturday API errors."""
+    """Base class for every API error. ``status`` is 0 for a timeout or connection error."""
 
     def __init__(
         self,
@@ -22,6 +21,7 @@ class SaturdayError(Exception):
         request_id: Optional[str] = None,
     ):
         super().__init__(message)
+        self.message = message
         self.status = status
         self.error_type = error_type
         self.code = code
@@ -29,49 +29,64 @@ class SaturdayError(Exception):
         self.request_id = request_id
 
     @classmethod
-    def from_response(cls, status: int, error_body: dict) -> "SaturdayError":
-        """Create the appropriate error subclass from an API error response."""
-        detail = error_body.get("error", error_body)
-        msg = detail.get("message", "Unknown error")
-        kwargs = {
-            "message": msg,
+    def from_response(cls, status: int, error_body: Dict[str, Any], retry_after: Optional[str] = None) -> "SaturdayError":
+        """The error subclass for an API error response."""
+        detail = error_body.get("error", error_body) if isinstance(error_body, dict) else {}
+        kwargs: Dict[str, Any] = {
+            "message": detail.get("message", f"HTTP {status}"),
             "status": status,
             "error_type": detail.get("type", "api_error"),
             "code": detail.get("code", "unknown"),
             "param": detail.get("param"),
             "request_id": detail.get("request_id"),
         }
-
+        if status in (400, 422):
+            return ValidationError(**kwargs)
         if status == 401:
             return AuthenticationError(**kwargs)
-        elif status == 404:
+        if status == 403:
+            return PermissionDeniedError(**kwargs)
+        if status == 404:
             return NotFoundError(**kwargs)
-        elif status == 429:
-            return RateLimitError(**kwargs)
-        elif status in (400, 422):
-            return ValidationError(**kwargs)
-        else:
-            return cls(**kwargs)
+        if status == 429:
+            seconds: Optional[int] = None
+            if retry_after is not None:
+                try:
+                    seconds = max(0, int(retry_after))
+                except ValueError:
+                    seconds = None
+            return RateLimitError(**kwargs, retry_after=seconds)
+        return cls(**kwargs)
 
 
 class AuthenticationError(SaturdayError):
-    """Missing or invalid API key / Bearer token."""
-    pass
+    """401: the key or token is missing, invalid, revoked, or for the other environment."""
+
+
+class PermissionDeniedError(SaturdayError):
+    """403: the key cannot use this feature or resource (for example ``feature_alpha``)."""
 
 
 class RateLimitError(SaturdayError):
-    """Rate limit exceeded. Check retry_after for seconds to wait."""
+    """429.
 
-    def __init__(self, *args, retry_after: int = 60, **kwargs):
+    A rate limit or pacing carries ``retry_after`` in seconds; the client waits out one of 60
+    seconds or less itself. A daily ceiling has no ``retry_after`` (``daily_limit`` is True) and
+    resets at midnight UTC.
+    """
+
+    def __init__(self, *args: Any, retry_after: Optional[int] = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.retry_after = retry_after
 
+    @property
+    def daily_limit(self) -> bool:
+        return self.retry_after is None
+
 
 class ValidationError(SaturdayError):
-    """Request validation failed (400 or 422)."""
-    pass
+    """400 or 422: the request is invalid. ``param`` names the field."""
 
 
 class NotFoundError(SaturdayError):
-    """Resource not found (404)."""
-    pass
+    """404: no such resource for this key, or a route this key cannot see."""
