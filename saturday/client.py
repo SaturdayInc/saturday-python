@@ -260,15 +260,23 @@ class _NutritionResource:
     def product_fit(self, **request: Any) -> ProductFitResponse:
         """Size one catalog product against the athlete's prescription for a session.
 
-        Required: ``athlete_id``, ``activity_type`` (a single sport), ``duration_min`` and
-        ``product_id`` or ``product_query``. Send ``intensity_level``, ``thermal_stress_level``,
+        Required: ``athlete_id``, ``activity_type`` and ``product_id`` or ``product_query``, with
+        ``duration_min`` for a single sport. A brick or triathlon carries ``legs`` (each with
+        ``activity_type``, ``duration_min``, ``intensity_level`` and ``thermal_stress_level``, as on
+        ``calculate``) and its exact answer sizes the product for each leg under ``legs``. Send
+        ``intensity_level``, ``thermal_stress_level`` (on the legs for a brick or triathlon),
         ``meal_before_min`` and ``is_race`` too: one left out computes at its everyday value and
-        the plan is the middle of the athlete's ranges, with ``plan_basis`` naming it.
+        the plan is the middle of the athlete's ranges, with ``plan_basis`` naming it. A session
+        error names its field in ``ValidationError.param``.
         """
         return self._client.request("POST", "/v1/nutrition/products/fit", json=request)
 
     def compare_products(self, **request: Any) -> ProductCompareResponse:
-        """Size two products (``product_a``, ``product_b``: each ``{"product_id"}`` or ``{"product_query"}``) and name the better fit."""
+        """Size two products (``product_a``, ``product_b``: each ``{"product_id"}`` or ``{"product_query"}``) and name the better fit.
+
+        The session fields are ``product_fit``'s; a brick or triathlon with ``legs`` is compared
+        for each leg under ``legs`` too.
+        """
         return self._client.request("POST", "/v1/nutrition/products/compare", json=request)
 
     def extract(self, **request: Any) -> Dict[str, Any]:
@@ -393,16 +401,30 @@ class _ActivitiesResource:
         """The stored prescription. ``NotFoundError`` until the activity has been calculated."""
         return self._client.request("GET", f"/v1/athletes/{_seg(athlete_id)}/activities/{_seg(activity_id)}/prescription")
 
-    def prep(self, athlete_id: str, activity_id: str, *, products: Optional[List[Dict[str, Any]]] = None) -> PrepResponse:
+    def prep(
+        self,
+        athlete_id: str,
+        activity_id: str,
+        *,
+        products: Optional[List[Dict[str, Any]]] = None,
+        legs: Optional[List[Dict[str, Any]]] = None,
+    ) -> PrepResponse:
         """Size catalog products against the activity's prescription and show the gap left.
 
         Each product is ``{"product_id"}`` or ``{"product_query"}``, with optional ``servings``
         over the whole activity; without ``servings`` Saturday sizes it to what the plan still
         needs, in list order.
+
+        A brick or triathlon with exact numbers is prepped leg by leg under ``legs``: ``products``
+        is sized against each leg, its ``servings`` counting per leg, or send ``legs``, one
+        ``{"products": [...]}`` per leg of the activity in order, for a list per leg. Send one or
+        the other. ``legs`` on a single session, or with another count, raises ``ValidationError``
+        with ``param`` ``legs``.
         """
-        return self._client.request(
-            "POST", f"/v1/athletes/{_seg(athlete_id)}/activities/{_seg(activity_id)}/prep", json={"products": products or []}
-        )
+        body: Dict[str, Any] = {"legs": legs} if legs is not None else {}
+        if products is not None or legs is None:
+            body["products"] = products or []
+        return self._client.request("POST", f"/v1/athletes/{_seg(athlete_id)}/activities/{_seg(activity_id)}/prep", json=body)
 
     def import_activities(
         self,

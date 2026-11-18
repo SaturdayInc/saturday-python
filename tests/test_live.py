@@ -4,9 +4,11 @@ Skipped unless SATURDAY_LIVE_BASE_URL and SATURDAY_LIVE_API_KEY (an sk_test_ key
 tests/LIVE.md says how to run it and what it creates.
 """
 
+import base64
 import json
 import os
 import re
+import time
 import uuid
 
 import pytest
@@ -30,6 +32,40 @@ COMPLETE = {
     },
 }
 SESSION = {"intensity_level": 5, "thermal_stress_level": 5, "meal_before_min": 120, "is_race": False}
+
+# Unix seconds stay below this until the year 5138; a time in milliseconds today is about 1.8e12.
+MILLISECOND_SIZED = 1e11
+TIME_KEY = re.compile(r"(_at|_date|^timestamp)$")
+
+
+def assert_seconds(name, value, path=""):
+    """Every time a partner key receives is Unix seconds: no *_at, *_date or timestamp number at any depth is millisecond-sized."""
+    if isinstance(value, list):
+        for i, item in enumerate(value):
+            assert_seconds(name, item, f"{path}[{i}]")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(item, (int, float)) and not isinstance(item, bool) and TIME_KEY.search(key):
+                assert item < MILLISECOND_SIZED, f"{name}: {path}.{key} is {item}, a time in milliseconds"
+            assert_seconds(name, item, f"{path}.{key}")
+
+
+def delivered_event(event_data):
+    """A webhook delivery's event body, decoded from its base64 event_data."""
+    return json.loads(base64.b64decode(event_data or ""))
+
+
+def assert_legs_add_up(prep):
+    """Prep's top level on a brick is its legs added up: each product once with its servings summed, the totals and gap the legs' sums."""
+    legs = prep["legs"]
+    for key in ("carb_g", "sodium_mg", "fluid_ml"):
+        assert prep["totals_from_products"][key] == sum(leg["totals_from_products"][key] for leg in legs)
+        assert prep["remaining_gap"][key] == sum(leg["remaining_gap"][key] for leg in legs)
+    ids = [p["product_id"] for p in prep["products"]]
+    assert len(set(ids)) == len(ids)
+    for product in prep["products"]:
+        servings = sum(p["servings"] for leg in legs for p in leg["products"] if p["product_id"] == product["product_id"])
+        assert product["servings"] == pytest.approx(servings)
 
 
 def scrub(value, key=""):
@@ -62,6 +98,7 @@ def live():
     captured = {}
 
     def capture(name, type_name, body):
+        assert_seconds(name, body)
         captured[name] = {"type": type_name, "body": scrub(body)}
         return body
 
@@ -204,6 +241,23 @@ def test_main_flows(live):
     hook_id = hook["webhook"]["id"]
     capture("webhook_list", "WebhookListResponse", client.webhooks.list())
     capture("webhook", "Webhook", client.webhooks.get(hook_id))
+    # example.com answers 405, so each delivery is recorded as failed, its event body kept in event_data.
+    tested = capture("webhook_test", "WebhookTestResponse", client.webhooks.test(hook_id))
+    test_event = delivered_event(tested["delivery"].get("event_data"))
+    assert test_event["type"] == "webhook.test"
+    assert_seconds("webhook.test event", test_event)
+    assert abs(test_event["created_at"] - time.time()) < 600
+    client.nutrition.calculate(athlete_id=complete["id"], activity_type="run", duration_min=60, **SESSION)
+    calculated_event = None
+    for _ in range(20):
+        delivery = next((d for d in client.webhooks.list_deliveries(hook_id)["deliveries"] if d["event_type"] == "prescription.calculated"), None)
+        if delivery and delivery.get("event_data"):
+            calculated_event = delivered_event(delivery["event_data"])
+            break
+        time.sleep(0.5)
+    assert calculated_event and calculated_event["data"]["athlete_id"] == complete["id"]
+    assert_seconds("prescription.calculated event", calculated_event)
+    assert abs(calculated_event["created_at"] - time.time()) < 600
     assert client.webhooks.update(hook_id, active=False)["active"] is False
     capture("webhook_deliveries", "WebhookDeliveryList", client.webhooks.list_deliveries(hook_id))
     client.webhooks.delete(hook_id)
@@ -225,7 +279,8 @@ def test_main_flows(live):
     consent = capture("consent", "ConsentRecord", client.athletes.record_consent(complete["id"], consent_type="analytics", granted=True))
     capture("consent_list", "ConsentListResponse", client.athletes.list_consent(complete["id"]))
     client.athletes.revoke_consent(complete["id"], consent["id"])
-    capture("export", "AthleteDataExport", client.athletes.export(complete["id"]))
+    exported = capture("export", "AthleteDataExport", client.athletes.export(complete["id"]))
+    assert abs(exported["exported_at"] - time.time()) < 600
     capture("integration_status", "IntegrationStatusResponse", client.integrations.status("strava", complete["id"]))
     client.athletes.erase(partial["id"])
     with pytest.raises(NotFoundError):
@@ -250,15 +305,18 @@ def test_linked_sessions(live):
     exact(brick)
     assert [leg["duration_min"] for leg in brick["legs"]] == [90, 30]
     assert abs(sum(leg["total_carb_g"] for leg in brick["legs"]) - brick["total_carb_g"]) <= len(brick["legs"])
+    # A brick is one call with legs: its legs sent as separate calls answer differently.
     separate = sum(client.nutrition.calculate(athlete_id=aid, **leg, **fed).get("total_carb_g", 0) for leg in brick_legs)
-    assert brick["total_carb_g"] > separate
+    assert brick["total_carb_g"] != separate
 
+    tri_legs = [
+        {"activity_type": "swim", "duration_min": 30, "intensity_level": 7, "thermal_stress_level": 3},
+        {"activity_type": "bike", "duration_min": 80, "intensity_level": 7, "thermal_stress_level": 6},
+        {"activity_type": "run", "duration_min": 40, "intensity_level": 7, "thermal_stress_level": 7},
+    ]
+    tri_session = {"meal_before_min": 240, "is_race": True}
     triathlon = capture("calculate_triathlon", "NutritionCalculateResponse", client.nutrition.calculate(
-        athlete_id=aid, activity_type="triathlon", duration_min=150, is_race=True, meal_before_min=240, legs=[
-            {"activity_type": "swim", "duration_min": 30, "intensity_level": 7, "thermal_stress_level": 3},
-            {"activity_type": "bike", "duration_min": 80, "intensity_level": 7, "thermal_stress_level": 6},
-            {"activity_type": "run", "duration_min": 40, "intensity_level": 7, "thermal_stress_level": 7},
-        ]))
+        athlete_id=aid, activity_type="triathlon", duration_min=150, legs=tri_legs, **tri_session))
     exact(triathlon)
     assert len(triathlon["legs"]) == 3
 
@@ -293,6 +351,58 @@ def test_linked_sessions(live):
     prep = capture("prep_brick", "PrepResponse", client.activities.prep(aid, stored["id"], products=[
         {"product_query": "maurten gel 100", "servings": 3}, {"product_query": "tailwind endurance fuel"}]))
     assert prep["prescription"]["carb_g"] == brick["total_carb_g"] and "plan_basis" not in prep
+    # One session-wide list is sized against each leg's share, its servings counting per leg; the top level is the legs added up.
+    assert [leg["activity_type"] for leg in prep["legs"]] == ["bike", "run"]
+    assert [leg["prescription"]["carb_g"] for leg in prep["legs"]] == [leg["total_carb_g"] for leg in brick["legs"]]
+    gel_id = next(p["product_id"] for p in prep["products"] if "Gel" in p["product_name"])
+    assert all(next(p["servings"] for p in leg["products"] if p["product_id"] == gel_id) == 3 for leg in prep["legs"])
+    assert_legs_add_up(prep)
+    per_leg = capture("prep_brick_per_leg", "PrepResponse", client.activities.prep(aid, stored["id"], legs=[
+        {"products": [{"product_query": "tailwind endurance fuel"}]},
+        {"products": [{"product_query": "maurten gel 100", "servings": 2}]},
+    ]))
+    assert gel_id not in [p["product_id"] for p in per_leg["legs"][0]["products"]]
+    assert [(p["product_id"], p["servings"]) for p in per_leg["legs"][1]["products"]] == [(gel_id, 2)]
+    assert len(per_leg["products"]) == 2
+    assert_legs_add_up(per_leg)
+    with pytest.raises(ValidationError) as wrong_count:
+        client.activities.prep(aid, stored["id"], legs=[{"products": []}])
+    assert (wrong_count.value.code, wrong_count.value.param) == ("invalid_value", "legs")
+
+    # Fit and compare size the whole session at the top level and each leg's share under legs.
+    brick_fit = capture("product_fit_brick", "ProductFitResponse", client.nutrition.product_fit(
+        athlete_id=aid, product_query="maurten gel 100", activity_type="brick", legs=brick_legs, **fed))
+    assert brick_fit["tier"] == "full" and "plan_basis" not in brick_fit
+    assert brick_fit["prescription"]["carb_g"] == brick["total_carb_g"]
+    assert [(leg["activity_type"], leg["duration_min"]) for leg in brick_fit["legs"]] == [("bike", 90), ("run", 30)]
+    assert [leg["prescription"]["carb_g"] for leg in brick_fit["legs"]] == [leg["total_carb_g"] for leg in brick["legs"]]
+    assert all(leg["fit"]["product_id"] == gel_id for leg in brick_fit["legs"])
+    tri_fit = client.nutrition.product_fit(
+        athlete_id=aid, product_query="tailwind endurance fuel", activity_type="triathlon", legs=tri_legs, duration_min=150, **tri_session)
+    assert tri_fit["prescription"]["carb_g"] == triathlon["total_carb_g"]
+    assert [leg["prescription"]["carb_g"] for leg in tri_fit["legs"]] == [leg["total_carb_g"] for leg in triathlon["legs"]]
+    tri_compare = capture("product_compare_triathlon", "ProductCompareResponse", client.nutrition.compare_products(
+        athlete_id=aid, product_a={"product_query": "maurten gel 100"}, product_b={"product_query": "tailwind endurance fuel"},
+        activity_type="triathlon", legs=tri_legs, **tri_session))
+    assert len(tri_compare["legs"]) == 3 and all(leg["winner"]["overall"] in ("product_a", "product_b") for leg in tri_compare["legs"])
+    brick_compare = client.nutrition.compare_products(
+        athlete_id=aid, product_a={"product_query": "maurten gel 100"}, product_b={"product_query": "tailwind endurance fuel"},
+        activity_type="brick", legs=brick_legs, **fed)
+    assert [leg["product_a"]["product_id"] for leg in brick_compare["legs"]] == [gel_id, gel_id]
+    # Each refusal names its field.
+    gel = {"athlete_id": aid, "product_query": "maurten gel 100"}
+    for request, param in (
+        ({"activity_type": "brick", "duration_min": 120, **SESSION}, "legs"),
+        ({"activity_type": "run", "duration_min": 120, "legs": brick_legs, **SESSION}, "legs"),
+        ({"activity_type": "brick", "legs": brick_legs, "duration_min": 100, **fed}, "duration_min"),
+    ):
+        with pytest.raises(ValidationError) as refused:
+            client.nutrition.product_fit(**gel, **request)
+        assert refused.value.param == param, request
+    with pytest.raises(ValidationError) as no_sport:
+        client.nutrition.compare_products(athlete_id=aid, product_a={"product_query": "maurten gel 100"},
+                                          product_b={"product_query": "tailwind endurance fuel"}, duration_min=60)
+    assert (no_sport.value.code, no_sport.value.param) == ("missing_field", "activity_type")
 
     # A brick's minutes, effort and heat live on its legs.
     with pytest.raises(ValidationError) as minutes:
@@ -303,6 +413,9 @@ def test_linked_sessions(live):
     assert client.activities.calculate_prescription(aid, stored["id"])["prescription"]["total_carb_g"] > brick["total_carb_g"]
     single = client.activities.update(aid, stored["id"], type="run", duration_min=60, intensity_level=5, thermal_stress_level=5)
     assert single["type"] == "run" and "legs" not in single
+    with pytest.raises(ValidationError) as legs_on_single:
+        client.activities.prep(aid, stored["id"], legs=[{"products": []}, {"products": []}])
+    assert (legs_on_single.value.code, legs_on_single.value.param) == ("invalid_value", "legs")
     with pytest.raises(ValidationError) as needs_legs:
         client.activities.update(aid, stored["id"], type="triathlon")
     assert needs_legs.value.param == "legs"

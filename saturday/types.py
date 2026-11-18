@@ -50,6 +50,9 @@ class BandImpact(TypedDict):
 
 class _MissingFieldRequired(TypedDict):
     field: str
+    # True for the safety core: sex, age, weight, sweat, saltiness, carb experience, usual carbs,
+    # effort and heat. False does not mean optional: the answer stays ranges while any listed field
+    # is missing, required or not.
     required: bool
 
 
@@ -72,7 +75,16 @@ class _PrecisionRequired(TypedDict):
 
 
 class Precision(_PrecisionRequired, total=False):
+    # Every field this calculation still needs, profile answers and session inputs alike. A field
+    # the athlete answered in a linked Saturday app is listed too.
     missing_fields: List[MissingField]
+    # With a partner API key, on every tier: the athlete's profile answers this calculation lacks,
+    # by the names missing_fields uses. The onboarding link collects them.
+    missing_profile_fields: List[str]
+    # With a partner API key, on every tier: the session inputs your request or activity left out.
+    # Send them. Both lists empty is one condition of exact numbers; the other is the athlete's
+    # access (a subscription, a seat license or the trial).
+    missing_session_inputs: List[SessionInput]
     # With a partner API key: names the athlete's profile answers (the onboarding link collects
     # them) apart from the session inputs your request or activity left out, and where to send those.
     message: str
@@ -83,7 +95,7 @@ class Precision(_PrecisionRequired, total=False):
 class LegPrescription(TypedDict):
     """One leg's share of a brick's or triathlon's prescription, as the Saturday app's leg cards
     show it. The legs' totals add up to the session's totals before the session's own rounding.
-    Per hour is over the leg's minutes; the first leg of a fasted start adds the 20-minute pre-load."""
+    Per hour is as the app's leg card shows it, which is not always the leg's total divided by its hours."""
 
     duration_min: int
     total_carb_g: int
@@ -114,7 +126,7 @@ class ActivityLeg(TypedDict):
 
 class TrialMetadata(TypedDict, total=False):
     tier_source: str
-    trial_ends_at: int  # Epoch milliseconds.
+    trial_ends_at: int  # When the trial ends, Unix seconds.
     trial_calls_remaining_today: int
     trial_cap_reached: bool
     trial_cap_note: str
@@ -127,6 +139,9 @@ class _CalculationRequired(TypedDict):
 
 
 class NutritionCalculateResponse(_CalculationRequired, TrialMetadata, total=False):
+    """Per-hour figures are whole numbers, as the Saturday app's Fuel card shows them, which is not
+    always the total divided by the session's hours. The totals are for the whole session."""
+
     carb_g_per_hr: float
     sodium_mg_per_hr: float
     fluid_ml_per_hr: float
@@ -348,7 +363,7 @@ class _FuelingProfileRequired(TypedDict):
 
 
 class FuelingProfile(_FuelingProfileRequired, total=False):
-    """athletes.get_fueling_profile: profile and updated_at (Unix ms) are present only when sharing is "on"; otherwise message says why."""
+    """athletes.get_fueling_profile: profile and updated_at (Unix seconds) are present only when sharing is "on"; otherwise message says why."""
 
     profile: FuelingProfileAnswers
     updated_at: int
@@ -737,7 +752,7 @@ class WebhookEvent(TypedDict):
 
     id: str
     type: str
-    created_at: int
+    created_at: int  # When the event happened, Unix seconds. The signature header's t is Unix seconds too.
     data: Dict[str, Any]
 
 
@@ -752,7 +767,7 @@ class ProfileSharingChangedEvent(TypedDict):
 
     id: str
     type: Literal["athlete.profile_sharing_changed"]
-    created_at: int
+    created_at: int  # Unix seconds.
     data: Athlete
 
 
@@ -761,7 +776,7 @@ class FuelingProfileUpdatedEvent(TypedDict):
 
     id: str
     type: Literal["athlete.fueling_profile_updated"]
-    created_at: int
+    created_at: int  # Unix seconds.
     data: FuelingProfileUpdatedData
 
 
@@ -822,8 +837,8 @@ class _PlanBasisRequired(TypedDict):
 
 
 class PlanBasis(_PlanBasisRequired, total=False):
-    """Present when a plan uses the middle of the per-hour ranges because the athlete's profile
-    or the session is missing inputs. With every input in, it is absent."""
+    """Present when a plan uses the middle of the per-hour ranges for the session because the
+    athlete's profile or the session is missing inputs. With every input in, it is absent."""
 
     # The athlete's profile answers the plan lacks, by the names precision.missing_fields uses.
     missing_profile_fields: List[str]
@@ -845,11 +860,25 @@ class _ProductAnswerRequired(TypedDict):
     safety: SafetyMetadata
 
 
+class ProductFitLeg(TypedDict):
+    """One leg of a brick or triathlon on a fit answer, in the order of the legs sent: its share of
+    the session's plan, as the Saturday app's leg cards show it, and the product sized against that
+    share, as the app's Prep page for that leg sizes it."""
+
+    activity_type: ActivityType
+    duration_min: int
+    prescription: NutrientAmounts
+    fit: ProductFitDetail
+
+
 class ProductFitResponse(_ProductAnswerRequired, total=False):
     """``full`` carries prescription and fit; ``teaser`` carries categories, cta and request_id."""
 
-    prescription: NutrientAmounts
-    fit: ProductFitDetail
+    prescription: NutrientAmounts  # The whole session's plan.
+    fit: ProductFitDetail  # The product sized against the whole session.
+    # A brick or triathlon with exact numbers: each leg's share and the product sized against it.
+    # Absent for a single sport and on a plan from ranges (plan_basis).
+    legs: List[ProductFitLeg]
     plan_basis: PlanBasis
     categories: List[ProductCategory]
     cta: SubscriptionCTA
@@ -859,18 +888,35 @@ class ProductFitResponse(_ProductAnswerRequired, total=False):
 ProductChoice = Literal["product_a", "product_b"]
 
 
-class ProductWinner(TypedDict):
+class ComparisonWinner(TypedDict):
+    """The product covering more of each nutrient at its max_servings; overall by average coverage. A tie goes to product_a."""
+
     carb: ProductChoice
     sodium: ProductChoice
     fluid: ProductChoice
     overall: ProductChoice
 
 
-class ProductCompareResponse(_ProductAnswerRequired, total=False):
+class ProductCompareLeg(TypedDict):
+    """One leg of a brick or triathlon on a compare answer, in the order of the legs sent: its share
+    of the plan and both products sized against it."""
+
+    activity_type: ActivityType
+    duration_min: int
     prescription: NutrientAmounts
     product_a: ProductFitDetail
     product_b: ProductFitDetail
-    winner: ProductWinner
+    winner: ComparisonWinner
+
+
+class ProductCompareResponse(_ProductAnswerRequired, total=False):
+    prescription: NutrientAmounts  # The whole session's plan.
+    product_a: ProductFitDetail
+    product_b: ProductFitDetail
+    winner: ComparisonWinner
+    # A brick or triathlon with exact numbers: each leg's share and both products sized against it.
+    # Absent for a single sport and on a plan from ranges (plan_basis).
+    legs: List[ProductCompareLeg]
     plan_basis: PlanBasis
     categories: List[ProductCategory]
     cta: SubscriptionCTA
@@ -898,8 +944,27 @@ class GearItem(TypedDict):
     type: str
     capacity_ml: int
     is_default: bool
-    created_at: int
-    updated_at: int
+    created_at: int  # Unix seconds.
+    updated_at: int  # Unix seconds.
+
+
+class _PrepLegRequired(TypedDict):
+    activity_type: ActivityType
+    duration_min: int
+    prescription: NutrientAmounts
+    products: List[PrepProduct]
+    totals_from_products: NutrientAmounts
+    remaining_gap: NutrientAmounts
+    coverage_pct: CoveragePct
+
+
+class PrepLeg(_PrepLegRequired, total=False):
+    """One leg of a brick or triathlon on a prep answer, in leg order: the leg's share of the plan,
+    as the Saturday app's leg card shows it, and its products sized against that share, as the
+    app's Prep page for that leg sizes them."""
+
+    warnings: List[str]  # Present when the leg's products overshoot its share.
+    note: str  # Present when a gap remains on the leg, saying what the base mix covers.
 
 
 class _PrepResponseRequired(TypedDict):
@@ -912,9 +977,20 @@ class _PrepResponseRequired(TypedDict):
 
 
 class PrepResponse(_PrepResponseRequired, total=False):
+    """Totals are for the whole activity. On a brick or triathlon with exact numbers, legs preps
+    each leg and the top level is the legs added up: each product once with its servings and
+    nutrients summed over the legs, totals_from_products and remaining_gap the legs' sums,
+    coverage_pct those totals against prescription, and warnings the legs' warnings, each naming
+    its leg. prescription stays the session's plan; the legs' shares add up to it before the
+    session's own rounding, so prescription less the totals can differ from remaining_gap by that
+    rounding."""
+
     gear: List[GearItem]
     warnings: List[str]
     note: str
+    # A brick or triathlon with exact numbers: each leg prepped against its share. Absent for a
+    # single session and on a plan from ranges.
+    legs: List[PrepLeg]
     plan_basis: PlanBasis
 
 
@@ -1040,7 +1116,7 @@ class PartnerAccount(TypedDict):
     status: Literal["active", "suspended"]
     plan: Literal["partner", "individual"]
     rate_limits: PartnerRateLimits
-    created_at: int  # Unix milliseconds.
+    created_at: int  # Unix seconds.
 
 
 class DailyUsage(TypedDict):
@@ -1075,8 +1151,8 @@ class _ApiKeyInfoRequired(TypedDict):
     name: str
     environment: Literal["live", "test"]
     scopes: List[str]
-    created_at: int  # Unix milliseconds.
-    last_used_at: int  # Unix milliseconds of the last authenticated call; 0 when never used.
+    created_at: int  # Unix seconds.
+    last_used_at: int  # The last authenticated call, Unix seconds; 0 when never used.
     revoked: bool
 
 
@@ -1098,7 +1174,7 @@ class CreatedApiKey(TypedDict):
     name: str
     environment: Literal["live", "test"]
     scopes: List[str]
-    created_at: int
+    created_at: int  # Unix seconds.
     message: str
     request_id: str
 
@@ -1124,12 +1200,12 @@ class _WebhookRequired(TypedDict):
     events: List[str]
     active: bool
     fail_count: int
-    created_at: int  # Unix milliseconds.
-    updated_at: int  # Unix milliseconds.
+    created_at: int  # Unix seconds.
+    updated_at: int  # Unix seconds.
 
 
 class Webhook(_WebhookRequired, total=False):
-    disabled_at: int
+    disabled_at: int  # Unix seconds; set when Saturday disabled the webhook after repeated failures.
 
 
 class WebhookWithSecret(Webhook):
@@ -1162,14 +1238,14 @@ class _WebhookDeliveryRequired(TypedDict):
     status: Literal["pending", "delivered", "failed", "exhausted"]
     status_code: int
     attempts: int
-    created_at: int
+    created_at: int  # Unix seconds.
 
 
 class WebhookDelivery(_WebhookDeliveryRequired, total=False):
     response_body: str
     event_data: str  # The event body, base64.
-    next_retry_at: int
-    completed_at: int
+    next_retry_at: int  # Unix seconds.
+    completed_at: int  # Unix seconds.
 
 
 class WebhookTestResponse(TypedDict):
@@ -1307,12 +1383,14 @@ class ConsentListResponse(TypedDict):
 class _AthleteDataExportRequired(TypedDict):
     athlete_id: str
     partner_id: str
-    exported_at: str  # RFC 3339.
+    exported_at: int  # When the export was made, Unix seconds.
+    # The athlete record as stored, every stored field included. Every time in the export's
+    # records is Unix seconds.
     profile: Dict[str, Any]
 
 
 class AthleteDataExport(_AthleteDataExportRequired, total=False):
-    activities: List[Dict[str, Any]]
+    activities: List[Dict[str, Any]]  # Each activity as stored, its stored prescription included.
     consent: List[Dict[str, Any]]
 
 
@@ -1326,7 +1404,7 @@ class _IntegrationStatusDetailRequired(TypedDict):
 
 
 class IntegrationStatusDetail(_IntegrationStatusDetailRequired, total=False):
-    last_sync_at: int
+    last_sync_at: int  # Unix seconds.
     errors: List[str]
 
 
