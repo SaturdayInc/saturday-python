@@ -3,9 +3,7 @@
 [![PyPI](https://img.shields.io/pypi/v/saturday)](https://pypi.org/project/saturday/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Official Python SDK for the [Saturday Nutrition Intelligence API](https://docs.saturday.fit).
-
-Personalized fuel, hydration, and electrolyte prescriptions for endurance athletes.
+The official Python client for the [Saturday API](https://docs.saturday.fit): carbohydrate, sodium and fluid prescriptions for endurance sessions, sized to each athlete, and product fit and prep against them.
 
 ## Install
 
@@ -13,42 +11,257 @@ Personalized fuel, hydration, and electrolyte prescriptions for endurance athlet
 pip install saturday
 ```
 
+Python 3.9 or later. One dependency: `httpx`.
+
 ## Quick start
+
+Create an athlete with a complete profile, then calculate a session for them. Use an `sk_test_` key while you build.
+
+```python
+import os
+
+from saturday import Saturday
+
+client = Saturday(api_key=os.environ["SATURDAY_API_KEY"])
+
+athlete = client.athletes.create(
+    external_id="user-42",
+    sex="female",
+    year_of_birth=1990,
+    weight_kg=62,
+    settings={
+        "sweat_level": 5,
+        "saltiness": 5,
+        "satiety_level": 5,
+        "fitness_level": 5,
+        "carb_experience": "range_40_60",
+        "usual_carb_consumption": "range_60_80",
+        "concerns_answered": True,
+    },
+)
+
+plan = client.nutrition.calculate(
+    athlete_id=athlete["id"],
+    activity_type="bike",
+    duration_min=180,
+    intensity_level=5,
+    thermal_stress_level=7,
+    meal_before_min=120,
+    is_race=False,
+)
+
+if plan.get("precision", {}).get("profile_complete"):
+    print(f"Carbs: {plan.get('carb_g_per_hr', 0)} g/hr")
+    print(f"Sodium: {plan.get('sodium_mg_per_hr', 0)} mg/hr")
+    print(f"Fluid: {plan.get('fluid_ml_per_hr', 0)} mL/hr")
+else:
+    print(f"Carbs: {plan['carb_range_g_per_hr']} g/hr")
+    print(f"Sodium: {plan['sodium_range_mg_per_hr']} mg/hr")
+    print(f"Fluid: {plan['fluid_range_ml_per_hr']} mL/hr")
+for warning in plan["safety"]["warnings"] or []:
+    print(warning)
+client.close()
+```
+
+Show `plan["attribution"]` wherever you show the numbers, and show every safety warning.
+
+## Exact numbers and ranges
+
+A calculation carries exact per-hour numbers and totals only when the athlete's profile is complete and their tier is full; otherwise it carries ranges such as `"60-80"`. `precision["profile_complete"]` tells you which. `tier == "full"` alone does not mean exact.
+
+- `precision["missing_fields"]` lists what is still unanswered, most impactful first, with how much each answer would narrow the ranges. Collect those answers in your UI (`client.onboarding.questions()` gives the questions) or send the athlete to `precision["onboarding"]["url"]`.
+- Send every session input on every call: `intensity_level`, `thermal_stress_level`, `meal_before_min` and `is_race`. One left out returns ranges even for a complete profile, and `precision["message"]` names it apart from the profile answers the athlete still owes; `precision["onboarding"]` comes only with the latter.
+- Per-hour figures are whole numbers. For a fasted start (`meal_before_min` over 180) the totals include a 20-minute pre-load, and the per-hour figures spread the totals over the session plus those 20 minutes.
+- A zero may be omitted from the response, so read numbers with `.get(field, 0)`.
+- A new athlete's first calculation starts a 30-day trial of the full tier: 15 calls on the first day, then 5 a day. `trial_calls_remaining_today` and `trial_ends_at` show where it stands.
+
+## Prep and product fit
+
+Store a session, calculate it, then size the products the athlete plans to carry against it.
 
 ```python
 from saturday import Saturday
 
-client = Saturday(api_key="sk_live_...")
+with Saturday(api_key="sk_test_...") as client:
+    ride = client.activities.create(
+        "ATHLETE_ID",
+        type="bike",
+        duration_min=150,
+        intensity_level=6,
+        thermal_stress_level=6,
+        meal_before_min=120,
+        is_race_event=False,
+    )
+    client.activities.calculate_prescription("ATHLETE_ID", ride["id"])
 
-# Calculate a nutrition prescription
-prescription = client.nutrition.calculate(
-    activity_type="bike",
-    duration_min=180,
-    athlete_weight_kg=75,
-    thermal_stress_level=7,
-    is_race=True,
-)
+    prep = client.activities.prep("ATHLETE_ID", ride["id"], products=[
+        {"product_query": "maurten gel 100", "servings": 2},
+        {"product_query": "tailwind endurance fuel"},
+    ])
+    for product in prep["products"]:
+        print(f"{product['servings']} x {product['product_name']}")
+    print("Still needed:", prep["remaining_gap"])
 
-# Safety metadata is included on every tier.
-print(prescription["safety"]["warnings"])
-carbs = prescription.get("carb_range_g_per_hr", prescription.get("carb_g_per_hr", 0))
-sodium = prescription.get("sodium_range_mg_per_hr", prescription.get("sodium_mg_per_hr", 0))
-fluid = prescription.get("fluid_range_ml_per_hr", prescription.get("fluid_ml_per_hr", 0))
-print(f"Carbs: {carbs} g/hr")
-print(f"Sodium: {sodium} mg/hr")
-print(f"Fluid: {fluid} mL/hr")
+    fit = client.nutrition.product_fit(
+        athlete_id="ATHLETE_ID",
+        product_query="maurten gel 100",
+        activity_type="run",
+        duration_min=90,
+        intensity_level=7,
+        thermal_stress_level=5,
+        meal_before_min=120,
+        is_race=True,
+    )
+    if fit["tier"] == "full":
+        print(fit["fit"]["verdict"])
 ```
 
-Teaser-tier responses and incomplete profiles return ranges rather than exact numbers, and the `full` tier alone does not guarantee exact values. A zero value may be omitted from the response, so the example prints `0` for it. See [Athlete Onboarding](https://docs.saturday.fit/guides/onboarding).
+A stored activity uses `type` and `is_race_event`; a calculation uses `activity_type` and `is_race`. The API refuses the other spelling with a `ValidationError` whose `code` is `unsupported_field`.
 
-## Features
+When the athlete's profile or the session is missing inputs, prep, product fit and compare plan from the middle of the athlete's ranges and say so in `plan_basis`: its `source` is `profile_incomplete`, `session_incomplete` or both, `missing_profile_fields` and `missing_session_inputs` list what is missing, and `onboarding` comes only when profile answers are. Show `plan_basis["message"]` with the plan. Product answers follow the athlete's Saturday subscription or trial: without one, `tier` is `"teaser"` and the response carries product categories in place of the fit.
 
-- TypedDict responses with a `py.typed` marker (PEP 561); values stay ordinary dictionaries
-- Automatic retry on `429` and `5xx` responses for JSON operations: up to 3 retries, with 1 s, 2 s, and 4 s backoff. AI stream writes are never replayed
-- Typed errors: `AuthenticationError`, `RateLimitError`, `ValidationError`, `NotFoundError`, `AIStreamError`
-- API key and OAuth2 Bearer token authentication
-- Context manager and `close()` for connection cleanup
-- `safety` object with `not_instructions` on every prescription
+## Bricks and triathlons
+
+A brick or a triathlon is one session with legs, calculated as the Saturday app does it, as one continuous effort: send it as one call, never one per leg. Each leg carries its own effort and heat; `duration_min` is the legs' total and may be left out.
+
+```python
+from saturday import Saturday
+
+with Saturday(api_key="sk_test_...") as client:
+    brick = client.nutrition.calculate(
+        athlete_id="ATHLETE_ID",
+        activity_type="brick",
+        meal_before_min=120,
+        is_race=False,
+        legs=[
+            {"activity_type": "bike", "duration_min": 90, "intensity_level": 6, "thermal_stress_level": 6},
+            {"activity_type": "run", "duration_min": 30, "intensity_level": 7, "thermal_stress_level": 6},
+        ],
+    )
+    for leg in brick.get("legs", []):
+        print(f"{leg['duration_min']} min: {leg['total_carb_g']} g carbs")
+
+    stored = client.activities.create(
+        "ATHLETE_ID",
+        type="triathlon",
+        meal_before_min=240,
+        is_race_event=True,
+        legs=[
+            {"type": "swim", "duration_min": 30, "intensity_level": 7, "thermal_stress_level": 3},
+            {"type": "bike", "duration_min": 80, "intensity_level": 7, "thermal_stress_level": 6},
+            {"type": "run", "duration_min": 40, "intensity_level": 7, "thermal_stress_level": 7},
+        ],
+    )
+    calculated = client.activities.calculate_prescription("ATHLETE_ID", stored["id"])
+    print(calculated.get("prescription", {}).get("legs"))
+```
+
+- `legs` on an exact answer (calculate, batch, the stored prescription, import) is each leg's share, in order, as the Saturday app's leg cards show it. Answers with ranges carry no leg figures.
+- A leg's sport is `activity_type` on a calculation and `type` on an activity, as for a single session.
+- `activities.update` with `legs` replaces them; a brick or triathlon refuses a top-level effort or heat. Changing `type` to a single sport drops the legs.
+- `client.reference.activity_types()` lists the rules under `linked_session_types`. Product fit and compare size for a single sport; prep sizes a stored brick or triathlon as one session.
+
+## Resources
+
+| Resource | Methods |
+|----------|---------|
+| `client.nutrition` | `calculate`, `batch_calculate`, `product_fit`, `compare_products`, `extract` |
+| `client.athletes` | `create`, `get`, `list`, `update`, `delete`, `get_settings`, `update_settings`, `get_fueling_profile`, `batch_create`, `export`, `erase`, `list_consent`, `record_consent`, `revoke_consent` |
+| `client.activities` | `create`, `get`, `list`, `update`, `delete`, `calculate_prescription`, `get_prescription`, `prep`, `import_activities`, `submit_feedback` |
+| `client.onboarding` | `questions` |
+| `client.reference` | `activity_types`, `settings_schema` |
+| `client.infer` | `activity_type`, `brick_types` |
+| `client.partner` | `get`, `usage`, `usage_daily`, `list_api_keys`, `create_api_key`, `revoke_api_key`, `rotate_api_key` |
+| `client.webhooks` | `create`, `list`, `get`, `update`, `delete`, `test`, `list_deliveries` |
+| `client.organizations` | `create`, `list`, `get`, `update`, `add_member`, `list_members`, `remove_member`, `set_offer`, `get_offer`, `delete_offer`, `create_subscription`, `list_subscriptions`, `update_subscription`, `add_licenses`, `list_licenses`, `remove_license` |
+| `client.integrations` | `sync`, `status`, `disconnect` |
+| `client.testing` | `simulate_subscription` (test keys only) |
+| `client.meta` | `discovery`, `errors`, `health` |
+| `client.knowledge` | `search`, `list_topics`, `get_article` (early access) |
+| `client.coach` | Roster reads, alert and report configuration, coach webhooks and billing reads, with a coach key |
+
+Every method returns the API's JSON as plain dictionaries, typed with the TypedDicts in `saturday.types`. Lists keep their array under its name (`athletes`, `activities`) with `pagination["next_cursor"]` to pass back as `cursor`. Batch responses keep request order with failed items left out; match a failure to your input by `errors[i]["index"]`.
+
+`athletes.update_settings` replaces the whole settings object: send every setting you want kept. `athletes.delete` removes the athlete and everything stored under them in your account. `athletes.erase` is for a right-to-erasure request: it also ends the athlete's connected-provider grants, erases what those providers sent, and keeps an audit record of the deletion.
+
+Nutrition and knowledge sit behind [feature gates](https://docs.saturday.fit/guides/feature-gates) that Saturday opens per partner. Until a gate is open for your key, its routes answer `403` with code `feature_alpha` (`PermissionDeniedError`); ask api@saturday.fit to open one.
+
+## Finding an athlete by your own id
+
+`athletes.list(external_id=...)` returns the athletes you created with that `external_id`, newest first, in one page. The API does not deduplicate `external_id`, so look an athlete up this way before creating one when a create may have been interrupted.
+
+```python
+from saturday import Saturday
+
+with Saturday(api_key="sk_live_...") as client:
+    found = client.athletes.list(external_id="user-42")["athletes"]
+    athlete = found[0] if found else client.athletes.create(external_id="user-42", name="Sam")
+    print(athlete["id"])
+```
+
+## Webhooks
+
+`webhooks.create()` returns the new webhook under `webhook`, with `secret`, the key that signs every delivery. It is returned this once: store it before anything else. `webhooks.test()` delivers a `webhook.test` event at once and returns the delivery record with your endpoint's status code; `webhooks.list_deliveries()` returns the 50 most recent attempts. Webhook timestamps are Unix milliseconds.
+
+```python
+from saturday import Saturday
+
+with Saturday(api_key="sk_live_...") as client:
+    created = client.webhooks.create("https://example.com/saturday", ["athlete.created", "prescription.calculated"])
+    signing_secret = created["webhook"]["secret"]  # store it now
+    delivery = client.webhooks.test(created["webhook"]["id"])["delivery"]
+    print(delivery["status"], delivery["status_code"])
+```
+
+See [Webhooks](https://docs.saturday.fit/guides/webhooks) for verifying signatures.
+
+## Coach alert rules
+
+`coach.set_notification_rules()` replaces the whole rule set at a scope, `channel_config` included. Read the rules first and send them back with your change: a set without `channel_config` clears it at that scope, and at the overall scope that turns the coach's email and push alerts off.
+
+```python
+from saturday import Saturday
+
+with Saturday(api_key="cp_live_...") as client:
+    rules = client.coach.get_notification_rules(scope="overall")
+    client.coach.set_notification_rules("overall", {**rules, "hourly_cap": {"enabled": True, "per_hour": 2}})
+```
+
+## Errors, retries and limits
+
+Every API error is a `SaturdayError` with `status`, `code`, `message`, `param`, `request_id` and `error_type`. Subclasses: `ValidationError` (400, with `suggestion` for a field the request does not take), `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (404), `RateLimitError` (429).
+
+```python
+from saturday import RateLimitError, Saturday, ValidationError
+
+with Saturday(api_key="sk_test_...") as client:
+    try:
+        client.nutrition.calculate(activity_type="run", duration_min=60)
+    except RateLimitError as error:
+        if error.daily_limit:
+            print(f"{error.code}: resets at {error.resets_at.isoformat()}")
+        else:
+            print(f"{error.code}: try again in {error.retry_after} s")
+    except ValidationError as error:
+        if error.code == "unsupported_field":
+            print(f"{error.param} is not a field of this request; send {error.suggestion or 'the documented fields'}")
+        else:
+            print(f"Fix {error.param}: {error}")
+```
+
+A `RateLimitError`'s `code` says which limit was hit:
+
+| `code` | What it means | What the client does |
+|--------|---------------|----------------------|
+| `rate_limit_exceeded` | Short-term throttle | Waits `retry_after` seconds and retries |
+| `catalog_paced` | New products are paced after a large share of the catalog in 24 hours; products already answered keep working | Retries a wait of 30 seconds or less; raises a longer one to you |
+| `rate_limited` | Calculations blocked after an unusual request pattern, for `retry_after` seconds | Raises it to you |
+| `daily_call_limit_reached` | Your daily call ceiling | Raises it to you, with `daily_limit` True and `resets_at` (UTC midnight) |
+| `intelligence_daily_limit_reached` | Your daily ceiling on calculations, products, inference, knowledge and AI; your athletes, activities and other data keep working | Same |
+| `athlete_free_daily_limit_reached` | Your daily budget of calculations sent without an `athlete_id` | Same |
+| `distinct_lookup_daily_limit_reached` | Your daily budget of distinct product lookups; repeat lookups keep working | Same |
+
+A 5xx is retried after its `Retry-After` (usually 5 seconds) or after 1 s, 2 s and 4 s, up to `max_retries` times, except on a `POST` that creates or changes a record (an athlete, an activity, an import, a webhook), since the server may have done the write; the calculation, product, inference, prep and export `POST`s are retried. The client never sleeps longer than 30 seconds inside one call. `client.partner.get()` shows your limits and `client.partner.usage()` what you have used.
 
 ## Configuration
 
@@ -58,99 +271,19 @@ from saturday import Saturday
 client = Saturday(
     api_key="sk_test_...",
     base_url="https://api.saturday.fit",  # default
-    timeout=30.0,  # seconds, per connect, read, and write on JSON requests; default 30
-    max_retries=3,  # default; 0 disables retries
+    timeout=30.0,  # seconds
+    max_retries=3,  # 0 disables retries
 )
-client.close()
+
+# An athlete's OAuth2 access token, sent in place of the API key
+delegated = Saturday(api_key="sk_live_...", bearer_token="eyJ...")
 ```
 
-## Authentication
-
-```python
-# Partner API key (server-to-server)
-client = Saturday(api_key="sk_live_...")
-
-# OAuth2 Bearer token (athlete-delegated access); it takes precedence over the API key
-client = Saturday(api_key="sk_live_...", bearer_token="eyJ...")
-
-# Coach API key, for the coach resource
-client = Saturday(api_key="cp_live_...")
-
-# Context manager for automatic cleanup
-with Saturday(api_key="sk_live_...") as client:
-    rx = client.nutrition.calculate(activity_type="run", duration_min=60)
-```
-
-Partner keys carry the `sk_live_` or `sk_test_` prefix; coach keys carry `cp_live_` or `cp_test_`.
-
-## Error handling
-
-```python
-from saturday import Saturday, RateLimitError, ValidationError, NotFoundError
-
-client = Saturday(api_key="sk_live_...")
-
-try:
-    rx = client.nutrition.calculate(activity_type="swim", duration_min=60)
-except ValidationError as e:
-    print(f"Invalid request: {e} (param: {e.param})")
-except RateLimitError as e:
-    print(f"Rate limited. Retry after {e.retry_after}s")
-except NotFoundError:
-    print("Resource not found")
-```
-
-`retry_after` is the server's `Retry-After` value in seconds, or 60 when the response carries none.
-
-## Resources
-
-| Resource | Description |
-|----------|-------------|
-| `client.nutrition` | Calculate prescriptions, batch calculate |
-| `client.athletes` | Athlete CRUD, settings, the athlete's shared Saturday app answers, batch create, GDPR data export |
-| `client.activities` | Activity CRUD, prescription calculation, import, feedback |
-| `client.products` | Product search, barcode lookup, curated list, categories |
-| `client.ai` | Async AI event streams, plus synchronous JSON conversation metadata, history, listing, and deletion; see AI writes below |
-| `client.webhooks` | Webhook registration and management |
-| `client.organizations` | Team and organization management with members |
-| `client.gear` | Athlete gear inventory |
-| `client.knowledge` | Sports nutrition knowledge base search |
-| `client.onboarding` | The versioned onboarding question schema, for collecting an athlete's profile in your UI |
-| `client.coach` | Roster fueling reads, the coach's alert and report configuration, coach webhooks, and read-only billing (`seat_state`, `ledger`, `tier_status`, `connect_summary`, `connect_earnings`, `connect_transactions`, `connect_arrangements`; the key must carry `billing:read`), with a coach key |
-
-## Prescription and batch responses
-
-The exported types in `saturday.types` describe the existing wire dictionaries; they do not validate, filter, or convert responses. `nutrition.calculate()` returns flat nutrition fields. `activities.calculate_prescription()` returns a `PrescriptionEnvelope`: full-tier results are under `prescription`, while teaser ranges are at the top level. Full-tier prescriptions can also contain ranges when inputs are incomplete.
-
-`activities.get_prescription()` returns `{ "prescription": ..., "safety": ... }`, with no `tier` field. Activity timestamps, including `calculated_at`, use epoch seconds; `trial_ends_at` uses epoch milliseconds. Safety warnings may be `None`.
-
-```python
-from saturday import Saturday, StoredPrescriptionResponse
-
-with Saturday(api_key="sk_live_...") as client:
-    stored: StoredPrescriptionResponse = client.activities.get_prescription("ath_123", "act_123")
-    prescription = stored["prescription"]
-    carbs = prescription.get("carb_range_g_per_hr", prescription["carb_g_per_hr"])
-    print(f"Carbs: {carbs} g/hr")
-    for warning in stored["safety"]["warnings"] or []:
-        print(warning)
-```
-
-Batch calculations return flat `results[]`, not indexed prescription wrappers. Athlete batches return `created[]`. Success arrays preserve input order with failed items omitted; `errors[]` contains each failed item's original `index`, `code`, and `message`.
-
-`activities.import_activities(athlete_id, activities, calculate=True)` creates activities and optionally calculates prescriptions. Omit `calculate` to avoid global calculation; individual activities may explicitly set `calculate=True`. A global `False` does not override a per-activity `True`. Calculation outcomes appear in `prescriptions[]`; a failed calculation does not undo an imported activity. Each batch/import item counts toward the applicable quota; requested calculations may also consume trial calls.
-
-Static type checking may now flag access to fields the server never returned. TypedDict values also cannot be passed directly to helpers annotated `Dict[str, Any]`: use `Mapping[str, object]` for read-only helpers, or `dict(response)` when you intentionally need a mutable dictionary copy. Dictionary indexing and existing runtime values are unchanged.
-
-Athlete and activity list responses keep the resource array under `athletes` or `activities`. Pagination is nested: check `page["pagination"]["has_more"]` and pass `page["pagination"].get("next_cursor")` as the next request's `cursor` argument. `page["pagination"]["total"]` counts records on that page, not the entire collection.
-
-The legacy athlete-list `search` argument is currently ignored by the backend. It remains accepted for source compatibility, but does not filter results.
-
-Athlete settings use flat concern flags, such as `sweat_level=5, gut_distress=True`, not a nested `concerns` object. `athletes.update_settings()` replaces the complete settings for a partner-managed athlete; omitted settings reset. Send the complete intended settings, including values you want to preserve. The SDK does not fetch or merge settings implicitly.
+Partner keys start `sk_live_` or `sk_test_`; coach keys start `cp_live_` or `cp_test_`. A test key reaches the test environment, where `client.testing.simulate_subscription(athlete_id)` gives an athlete the full tier. The client holds a connection pool: use it as a context manager or call `close()`.
 
 ## Athlete profile sharing
 
-An athlete whose Saturday account is connected to your athlete record can choose to share their Saturday app answers with you. `athletes.get_fueling_profile(athlete_id)` returns a `FuelingProfile`; check `sharing` first. Only `"on"` carries `profile` (sex, age, weight and the fueling answers, each with its `value` and `calculations_use`) and `updated_at`; `"off"` and `"not_linked"` carry a `message` saying why there are none. `athletes.get()` returns the same state as `profile_sharing`.
+An athlete who connects their Saturday account to your athlete record can share their Saturday app answers with you. `athletes.get_fueling_profile(athlete_id)` returns a `FuelingProfile`; check `sharing` first. Only `"on"` carries `profile`; `"off"` and `"not_linked"` carry a `message`.
 
 ```python
 from saturday import FuelingProfile, Saturday
@@ -165,52 +298,15 @@ with Saturday(api_key="sk_live_...") as client:
         print(fueling["message"])
 ```
 
-`value` is the app answer, `None` when the athlete has not answered it in the app. `calculations_use` says where the value Saturday's calculations use comes from: `partner` (yours), `saturday_app`, or `default`. The two sharing webhooks, typed as `ProfileSharingChangedEvent` and `FuelingProfileUpdatedEvent`, carry the athlete record with `profile_sharing` (the second adds `changed_fields`); read the route again on either. Full guide: [Reading an athlete's fueling profile](https://docs.saturday.fit/guides/fueling-profile).
+`value` is `None` when the athlete has not answered that question in the app. `calculations_use` says where the value Saturday's calculations use comes from: `partner` (yours), `saturday_app`, or `default`. The two sharing webhooks, typed as `ProfileSharingChangedEvent` and `FuelingProfileUpdatedEvent`, carry the athlete record with `profile_sharing` (the second adds `changed_fields`). Guide: [Reading an athlete's fueling profile](https://docs.saturday.fit/guides/fueling-profile).
 
-## AI writes
+## Tests
 
-Use `ai.create_conversation_stream(athlete_id, message)` and `ai.send_message_stream(conversation_id, message)` with `async with`, then `async for`. These additive methods are asynchronous, even though the existing JSON SDK methods remain synchronous. Events are dictionaries with `event`, `data`, `raw_data` and optional `id`, preserving unknown event names and JSON fields. `id` is present only when the server sent an SSE `id:` line for that event; the server sends none today.
-
-Compatibility change: the legacy `ai.create_conversation()` and `ai.send_message()` methods now raise `AIStreamError` with code `streaming_required` locally, before any HTTP request. Migrate to the stream methods. The server never returned their promised JSON objects; the SDK does not invent metadata or timestamps to imitate them.
-
-```python
-import asyncio
-from saturday import Saturday, AIStreamError
-
-async def main():
-    with Saturday(api_key="sk_live_...") as client:
-        try:
-            async with client.ai.create_conversation_stream(
-                "YOUR_ATHLETE_ID", "Help me review my fueling plan", timeout=60.0
-            ) as events:
-                async for event in events:
-                    # Keep warnings, errors and unknown events, not only text.
-                    print(event["event"], event["data"])
-        except AIStreamError as error:
-            print(error.code, error.event)
-            raise  # No automatic retry: the server may have accepted the write.
-
-asyncio.run(main())
-```
-
-The `message_start` event supplies `data["conversation_id"]`. Current names include `text_delta`, `safety_warning`, `error`, `tool_call`, `tool_result`, `action`, `replay` and `message_end`. `message_end` is not a success verdict: server error events are yielded, then iteration raises `stream_error` after the response finishes. Warnings, including generation-halted safety warnings, must remain visible even if no exception is raised.
-
-AI stream writes never automatically retry, including HTTP 429/5xx, connection errors, malformed JSON/UTF-8 (`malformed_stream`), cancellation and premature EOF (`incomplete_stream`). `max_retries` does not apply. Preserve received events as partial output, not a complete answer. Inspect conversation state before deliberately submitting another message; these writes have no idempotency key.
-
-The stream timeout is a total deadline in seconds covering acquisition, headers and the body. It defaults to the client `timeout` when one is configured, else 60 s: a turn with tool calls can run up to the API's 60 s request cap. This is stronger than the inactivity timeout of ordinary synchronous HTTPX requests. Cancel the consuming asyncio task to interrupt a blocked read; `asyncio.CancelledError` propagates after cleanup. Exiting `async with`, including after a loop `break`, closes the response and its async HTTP client. Each stream owns these resources. Cancellation cannot undo accepted inference, and an SSE `retry` or `replay` does not repeat the POST.
-
-Redirects are refused with `AIStreamError` code `redirect`, so the SDK never forwards the POST to another URL. Connection failures use `connection_error`; HTTP failures retain the usual typed Saturday errors and parsed server details.
-
-Persist the received events if you need an exact record. Stored conversation history is not a guaranteed replay of streamed assistant output.
+`python -m pytest` runs the unit tests with mocked HTTP. `tests/test_live.py` runs every partner method against a real API with a test key; [tests/LIVE.md](tests/LIVE.md) says how.
 
 ## Documentation
 
-Full API reference: [docs.saturday.fit](https://docs.saturday.fit)
-
-## Requirements
-
-- Python 3.9+
-- httpx 0.25+
+[docs.saturday.fit](https://docs.saturday.fit)
 
 ## License
 

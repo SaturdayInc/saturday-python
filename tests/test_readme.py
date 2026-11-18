@@ -6,52 +6,43 @@ import httpx
 import pytest
 
 
+ATHLETE = {"id": "ath_1", "partner_id": "partner_example", "settings": {}, "profile_complete": True, "created_at": 1, "updated_at": 1}
+
+
 @pytest.mark.parametrize("payload, expected", [
-    ({"tier": "full", "carb_g_per_hr": 70, "sodium_mg_per_hr": 900, "fluid_ml_per_hr": 1000}, ["70", "900", "1000"]),
-    ({"tier": "full", "carb_range_g_per_hr": "60-80", "sodium_range_mg_per_hr": "800-1000", "fluid_range_ml_per_hr": "900-1100"}, ["60-80", "800-1000", "900-1100"]),
-    ({"tier": "teaser", "carb_range_g_per_hr": "60-90", "sodium_range_mg_per_hr": "500-1000", "fluid_range_ml_per_hr": "500-1000"}, ["60-90", "500-1000", "500-1000"]),
-    ({"tier": "full"}, ["0", "0", "0"]),
+    ({"tier": "full", "carb_g_per_hr": 70, "sodium_mg_per_hr": 900, "fluid_ml_per_hr": 1000, "precision": {"profile_complete": True}},
+     ["70", "900", "1000"]),
+    ({"tier": "full", "carb_range_g_per_hr": "60-80", "sodium_range_mg_per_hr": "800-1000", "fluid_range_ml_per_hr": "900-1100",
+      "precision": {"profile_complete": False}}, ["60-80", "800-1000", "900-1100"]),
+    ({"tier": "full", "carb_g_per_hr": 70, "fluid_ml_per_hr": 500, "precision": {"profile_complete": True}}, ["70", "0", "500"]),
 ])
 def test_readme_quickstart(monkeypatch, capsys, payload, expected):
     def send(client, request, **kwargs):
         assert request.method == "POST"
+        body = json.loads(request.content)
+        if request.url.path == "/v1/athletes":
+            assert body["settings"]["concerns_answered"] is True
+            return httpx.Response(201, json=ATHLETE, request=request)
         assert request.url.path == "/v1/nutrition/calculate"
-        return httpx.Response(200, json={**payload, "safety": {"warnings": []}}, request=request)
+        assert body == {"athlete_id": "ath_1", "activity_type": "bike", "duration_min": 180, "intensity_level": 5,
+                        "thermal_stress_level": 7, "meal_before_min": 120, "is_race": False}
+        return httpx.Response(200, json={**payload, "safety": {"warnings": ["Drink to thirst above this rate."]}}, request=request)
 
     monkeypatch.setattr(httpx.Client, "send", send)
+    monkeypatch.setenv("SATURDAY_API_KEY", "sk_test_fake")
     readme = Path(__file__).parents[1].joinpath("README.md").read_text()
     code = re.search(r"```python\n(.*?)```", readme, re.S).group(1)
-    namespace = {}
-    try:
-        exec(compile(code, "README.md quickstart", "exec"), namespace)
-    finally:
-        if "client" in namespace:
-            namespace["client"].close()
+    exec(compile(code, "README.md quickstart", "exec"), {})
 
     assert capsys.readouterr().out.splitlines() == [
-        "[]", f"Carbs: {expected[0]} g/hr", f"Sodium: {expected[1]} mg/hr", f"Fluid: {expected[2]} mL/hr",
+        f"Carbs: {expected[0]} g/hr", f"Sodium: {expected[1]} mg/hr", f"Fluid: {expected[2]} mL/hr", "Drink to thirst above this rate.",
     ]
 
 
-@pytest.mark.parametrize("name, warnings, carbs", [
-    ("stored_exact", None, "60"),
-    ("stored_banded", [], "50-70"),
-    ("stored_banded", ["Review this recommendation"], "50-70"),
-])
-def test_readme_stored_prescription(monkeypatch, capsys, name, warnings, carbs):
-    fixtures = json.loads(Path(__file__).with_name("fixtures").joinpath("contracts.json").read_text())
-    payload = fixtures[name]
-
-    def send(client, request, **kwargs):
-        assert request.method == "GET"
-        assert request.url.path == "/v1/athletes/ath_123/activities/act_123/prescription"
-        return httpx.Response(200, json={**payload, "safety": {**payload["safety"], "warnings": warnings}}, request=request)
-
-    monkeypatch.setattr(httpx.Client, "send", send)
+def test_readme_python_examples_compile():
     readme = Path(__file__).parents[1].joinpath("README.md").read_text()
-    code = next(code for code in re.findall(r"```python\n(.*?)```", readme, re.S) if "get_prescription" in code)
-    exec(compile(code, "README.md stored prescription", "exec"), {})
-    assert capsys.readouterr().out.splitlines() == [f"Carbs: {carbs} g/hr", *(warnings or [])]
+    for i, code in enumerate(re.findall(r"```python\n(.*?)```", readme, re.S)):
+        compile(code, f"README.md example {i}", "exec")
 
 
 @pytest.mark.parametrize("name, expected", [
