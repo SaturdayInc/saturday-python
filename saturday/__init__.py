@@ -25,7 +25,6 @@ Example::
 """
 
 from saturday.client import SDK_VERSION, Saturday
-from saturday.ai_stream import AIStreamError, AIStreamEvent
 from saturday.errors import (
     SaturdayError,
     AuthenticationError,
@@ -121,8 +120,6 @@ __all__ = [
     "CoachBillingArrangement",
     "CoachConnectArrangements",
 
-    "AIStreamError",
-    "AIStreamEvent",
     "SaturdayError",
     "AuthenticationError",
     "RateLimitError",

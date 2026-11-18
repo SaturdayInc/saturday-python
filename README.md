@@ -44,8 +44,8 @@ Teaser-tier responses and incomplete profiles return ranges rather than exact nu
 ## Features
 
 - TypedDict responses with a `py.typed` marker (PEP 561); values stay ordinary dictionaries
-- Automatic retry for JSON operations, up to 3 times. A `429` is retried after the server's `Retry-After` when that is 30 s or less; a `429` with no `Retry-After` (a daily limit) or a longer one (a block that lasts minutes) raises `RateLimitError` at once. A `5xx` is retried with 1 s, 2 s, and 4 s backoff, except on a `POST` that creates or changes a record, so a retry cannot make a second athlete. AI stream writes are never replayed
-- Typed errors: `AuthenticationError`, `RateLimitError`, `ValidationError`, `NotFoundError`, `AIStreamError`
+- Automatic retry for JSON operations, up to 3 times. A `429` is retried after the server's `Retry-After` when that is 30 s or less; a `429` with no `Retry-After` (a daily limit) or a longer one (a block that lasts minutes) raises `RateLimitError` at once. A `5xx` is retried with 1 s, 2 s, and 4 s backoff, except on a `POST` that creates or changes a record, so a retry cannot make a second athlete.
+- Typed errors: `AuthenticationError`, `RateLimitError`, `ValidationError`, `NotFoundError`
 - API key and OAuth2 Bearer token authentication
 - Context manager and `close()` for connection cleanup
 - `safety` object with `not_instructions` on every prescription
@@ -109,16 +109,13 @@ except NotFoundError:
 | `client.nutrition` | Calculate prescriptions, batch calculate |
 | `client.athletes` | Athlete CRUD, settings, the athlete's shared Saturday app answers, batch create, GDPR data export |
 | `client.activities` | Activity CRUD, prescription calculation, import, feedback |
-| `client.products` | Product search, barcode lookup, curated list, categories |
-| `client.ai` | Async AI event streams, plus synchronous JSON conversation metadata, history, listing, and deletion; see AI writes below |
 | `client.webhooks` | Webhook registration and management |
 | `client.organizations` | Team and organization management with members |
-| `client.gear` | Athlete gear inventory |
 | `client.knowledge` | Sports nutrition knowledge base search |
 | `client.onboarding` | The versioned onboarding question schema, for collecting an athlete's profile in your UI |
 | `client.coach` | Roster fueling reads, the coach's alert and report configuration, coach webhooks, and read-only billing (`seat_state`, `ledger`, `tier_status`, `connect_summary`, `connect_earnings`, `connect_transactions`, `connect_arrangements`; the key must carry `billing:read`), with a coach key |
 
-Nutrition, products, gear, AI conversations and knowledge sit behind [feature gates](https://docs.saturday.fit/guides/feature-gates) that Saturday opens per partner. Until a gate is open for your key, its routes answer `404` (`NotFoundError`) or `403` with code `feature_alpha`; ask api@saturday.fit to open one.
+Nutrition and knowledge sit behind [feature gates](https://docs.saturday.fit/guides/feature-gates) that Saturday opens per partner. Until a gate is open for your key, its routes answer `404` (`NotFoundError`) or `403` with code `feature_alpha`; ask api@saturday.fit to open one.
 
 ## Finding an athlete by your own id
 
@@ -209,42 +206,6 @@ with Saturday(api_key="sk_live_...") as client:
 ```
 
 `value` is the app answer, `None` when the athlete has not answered it in the app. `calculations_use` says where the value Saturday's calculations use comes from: `partner` (yours), `saturday_app`, or `default`. The two sharing webhooks, typed as `ProfileSharingChangedEvent` and `FuelingProfileUpdatedEvent`, carry the athlete record with `profile_sharing` (the second adds `changed_fields`); read the route again on either. Full guide: [Reading an athlete's fueling profile](https://docs.saturday.fit/guides/fueling-profile).
-
-## AI writes
-
-Use `ai.create_conversation_stream(athlete_id, message)` and `ai.send_message_stream(conversation_id, message)` with `async with`, then `async for`. These additive methods are asynchronous, even though the existing JSON SDK methods remain synchronous. Events are dictionaries with `event`, `data`, `raw_data` and optional `id`, preserving unknown event names and JSON fields. `id` is present only when the server sent an SSE `id:` line for that event; the server sends none today.
-
-Compatibility change: the legacy `ai.create_conversation()` and `ai.send_message()` methods now raise `AIStreamError` with code `streaming_required` locally, before any HTTP request. Migrate to the stream methods. The server never returned their promised JSON objects; the SDK does not invent metadata or timestamps to imitate them.
-
-```python
-import asyncio
-from saturday import Saturday, AIStreamError
-
-async def main():
-    with Saturday(api_key="sk_live_...") as client:
-        try:
-            async with client.ai.create_conversation_stream(
-                "YOUR_ATHLETE_ID", "Help me review my fueling plan", timeout=60.0
-            ) as events:
-                async for event in events:
-                    # Keep warnings, errors and unknown events, not only text.
-                    print(event["event"], event["data"])
-        except AIStreamError as error:
-            print(error.code, error.event)
-            raise  # No automatic retry: the server may have accepted the write.
-
-asyncio.run(main())
-```
-
-The `message_start` event supplies `data["conversation_id"]`. Current names include `text_delta`, `safety_warning`, `error`, `tool_call`, `tool_result`, `action`, `replay` and `message_end`. `message_end` is not a success verdict: server error events are yielded, then iteration raises `stream_error` after the response finishes. Warnings, including generation-halted safety warnings, must remain visible even if no exception is raised.
-
-AI stream writes never automatically retry, including HTTP 429/5xx, connection errors, malformed JSON/UTF-8 (`malformed_stream`), cancellation and premature EOF (`incomplete_stream`). `max_retries` does not apply. Preserve received events as partial output, not a complete answer. Inspect conversation state before deliberately submitting another message; these writes have no idempotency key.
-
-The stream timeout is a total deadline in seconds covering acquisition, headers and the body. It defaults to the client `timeout` when one is configured, else 60 s: a turn with tool calls can run up to the API's 60 s request cap. This is stronger than the inactivity timeout of ordinary synchronous HTTPX requests. Cancel the consuming asyncio task to interrupt a blocked read; `asyncio.CancelledError` propagates after cleanup. Exiting `async with`, including after a loop `break`, closes the response and its async HTTP client. Each stream owns these resources. Cancellation cannot undo accepted inference, and an SSE `retry` or `replay` does not repeat the POST.
-
-Redirects are refused with `AIStreamError` code `redirect`, so the SDK never forwards the POST to another URL. Connection failures use `connection_error`; HTTP failures retain the usual typed Saturday errors and parsed server details.
-
-Persist the received events if you need an exact record. Stored conversation history is not a guaranteed replay of streamed assistant output.
 
 ## Documentation
 

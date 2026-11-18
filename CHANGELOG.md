@@ -2,6 +2,7 @@
 
 ## 0.8.0
 
+- **Breaking:** `client.products`, `client.ai` and `client.gear` are removed, with `AIStreamError` and `AIStreamEvent`. No partner key could use them: every call answered `404` (`NotFoundError`).
 - Retries follow what the API says. A `429` is retried after its `Retry-After` when that is 30 s or less. A `429` with no `Retry-After` (the daily call limit and the daily budgets) or a longer one (the block after a calculation sweep, up to 15 minutes) now raises `RateLimitError` at once; before, each was retried three times in seven seconds. A `5xx` on a `POST` that creates or changes a record is no longer retried, since the server may have done the write; `POST /v1/nutrition/calculate`, its batch and `/v1/infer/*` still are, with every `GET`, `PUT`, `PATCH` and `DELETE`.
 - `webhooks.create()` is typed as `WebhookCreateResponse`: the new webhook is under `webhook`, with `secret`, beside `message` and `request_id`. Read `response["webhook"]["secret"]`; it is returned only at creation. `webhooks.list()`, `get()`, `update()` and `test()` are typed too (`WebhookListResponse`, `Webhook`, `WebhookTestResponse`), with timestamps in Unix milliseconds. The `description` argument of `webhooks.create()` is ignored by the API, which does not store one.
 - Add `webhooks.list_deliveries(webhook_id)` for `GET /v1/webhooks/{id}/deliveries`, the 50 most recent delivery attempts (`WebhookDeliveryList`).

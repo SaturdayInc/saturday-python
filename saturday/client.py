@@ -9,13 +9,11 @@ nutrition response for AI consumers.
 from __future__ import annotations
 
 import time
-from typing import Any, AsyncContextManager, AsyncIterator, Dict, List, Optional, Sequence, Union
-from urllib.parse import quote
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import httpx
 
 from saturday.errors import RateLimitError, SaturdayError
-from saturday.ai_stream import AIStreamError, AIStreamEvent, stream_ai
 from saturday.types import (
     CoachSeatState,
     CoachLedgerPage,
@@ -48,8 +46,6 @@ from saturday.types import (
 SDK_VERSION = "0.8.0"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
 DEFAULT_TIMEOUT = 30.0
-# AI turns run up to the API's 60 s request cap, so an unconfigured stream deadline is longer than the JSON default.
-DEFAULT_STREAM_TIMEOUT = 60.0
 DEFAULT_MAX_RETRIES = 3
 
 
@@ -84,7 +80,7 @@ class Saturday:
     Args:
         api_key: Your partner API key (sk_live_... or sk_test_...).
         base_url: Base URL override. Defaults to https://api.saturday.fit.
-        timeout: Request timeout in seconds. Defaults to 30 for JSON requests and 60 for AI streams; an explicit value applies to both.
+        timeout: Request timeout in seconds. Defaults to 30.
         max_retries: Maximum retry attempts for transient failures. Defaults to 3.
         bearer_token: OAuth2 Bearer token (alternative to API key).
 
@@ -110,7 +106,6 @@ class Saturday:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._timeout = DEFAULT_TIMEOUT if timeout is None else timeout
-        self._stream_timeout = DEFAULT_STREAM_TIMEOUT if timeout is None else timeout
         self._max_retries = max_retries
         self._bearer_token = bearer_token
 
@@ -134,11 +129,8 @@ class Saturday:
         self.nutrition = _NutritionResource(self)
         self.athletes = _AthletesResource(self)
         self.activities = _ActivitiesResource(self)
-        self.products = _ProductsResource(self)
-        self.ai = _AIResource(self)
         self.webhooks = _WebhooksResource(self)
         self.organizations = _OrganizationsResource(self)
-        self.gear = _GearResource(self)
         self.knowledge = _KnowledgeResource(self)
         self.onboarding = _OnboardingResource(self)
         self.coach = _CoachResource(self)
@@ -414,87 +406,6 @@ class _ActivitiesResource:
         return self._client.request("POST", f"/v1/athletes/{athlete_id}/activities/{activity_id}/feedback", json=kwargs)
 
 
-class _ProductsResource:
-    """Saturday's curated product catalog.
-
-    Every method takes ``athlete_id``: the catalog opens on that athlete's
-    Saturday subscription, not on your partner account. A subscribed athlete (or
-    one inside their 30-day trial) gets ``tier: "full"`` with products; anyone
-    else gets ``tier: "teaser"`` with empty product lists plus the category
-    taxonomy and a subscribe CTA. Both are 200. Branch on ``tier``.
-    """
-
-    def __init__(self, client: Saturday):
-        self._client = client
-
-    def get_by_barcode(self, barcode: str, athlete_id: str) -> Dict[str, Any]:
-        """Look up a curated product by barcode, on behalf of an athlete."""
-        return self._client.request(
-            "GET", f"/v1/products/{barcode}", params={"athlete_id": athlete_id}
-        )
-
-    def search(self, query: str, athlete_id: str) -> Dict[str, Any]:
-        """Search the curated catalog, matched across name, brand, type, and keywords."""
-        return self._client.request(
-            "GET", "/v1/products/search", params={"q": query, "athlete_id": athlete_id}
-        )
-
-    def list_curated(self, athlete_id: str, *, cursor: Optional[str] = None) -> Dict[str, Any]:
-        """Page through Saturday's curated catalog (10 per page).
-
-        Pass the ``next_cursor`` from the previous response to advance.
-        """
-        params: Dict[str, Any] = {"athlete_id": athlete_id}
-        if cursor:
-            params["cursor"] = cursor
-        return self._client.request("GET", "/v1/products/curated", params=params)
-
-    def list_categories(self, athlete_id: str) -> Dict[str, Any]:
-        """List the product taxonomy. Free for every athlete."""
-        return self._client.request(
-            "GET", "/v1/products/categories", params={"athlete_id": athlete_id}
-        )
-
-
-class _AIResource:
-    def __init__(self, client: Saturday):
-        self._client = client
-
-    def create_conversation(self, athlete_id: str, initial_message: Optional[str] = None) -> Dict[str, Any]:
-        """Deprecated: use async create_conversation_stream; sends no request."""
-        raise AIStreamError("streaming_required", "Use async with ai.create_conversation_stream(athlete_id, message) and consume every event. No request was sent.")
-
-    def send_message(self, conv_id: str, message: str) -> Dict[str, Any]:
-        """Deprecated: use async send_message_stream; sends no request."""
-        raise AIStreamError("streaming_required", "Use async with ai.send_message_stream(conv_id, message) and consume every event. No request was sent.")
-
-    def create_conversation_stream(self, athlete_id: str, message: str, *, timeout: Optional[float] = None) -> AsyncContextManager[AsyncIterator[AIStreamEvent]]:
-        """Async context manager for a single-attempt AI POST with a total deadline: the client timeout, else 60 s."""
-        return stream_ai(self._client._base_url, dict(self._client._client.headers), "/v1/ai/conversations",
-                         {"athlete_id": athlete_id, "message": message}, self._client._stream_timeout if timeout is None else timeout)
-
-    def send_message_stream(self, conv_id: str, message: str, *, timeout: Optional[float] = None) -> AsyncContextManager[AsyncIterator[AIStreamEvent]]:
-        """Async context manager preserving all events, including errors and warnings; the deadline is the client timeout, else 60 s."""
-        return stream_ai(self._client._base_url, dict(self._client._client.headers), f"/v1/ai/conversations/{quote(conv_id, safe='')}/messages",
-                         {"message": message}, self._client._stream_timeout if timeout is None else timeout)
-
-    def get_messages(self, conv_id: str, *, limit: int = 50) -> Dict[str, Any]:
-        """Get stored JSON history; the server ignores the legacy limit argument."""
-        return self._client.request("GET", f"/v1/ai/conversations/{conv_id}/messages", params={"limit": limit})
-
-    def get_conversation(self, conv_id: str) -> Dict[str, Any]:
-        """Get conversation metadata."""
-        return self._client.request("GET", f"/v1/ai/conversations/{conv_id}")
-
-    def delete_conversation(self, conv_id: str) -> None:
-        """Delete a conversation."""
-        self._client.request("DELETE", f"/v1/ai/conversations/{conv_id}")
-
-    def list_conversations(self, athlete_id: str, *, limit: int = 20) -> Dict[str, Any]:
-        """List conversations for an athlete."""
-        return self._client.request("GET", f"/v1/athletes/{athlete_id}/ai/conversations", params={"limit": limit})
-
-
 class _WebhooksResource:
     def __init__(self, client: Saturday):
         self._client = client
@@ -566,27 +477,6 @@ class _OrganizationsResource:
     def remove_member(self, org_id: str, member_id: str) -> None:
         """Remove a member from an organization."""
         self._client.request("DELETE", f"/v1/organizations/{org_id}/members/{member_id}")
-
-
-class _GearResource:
-    def __init__(self, client: Saturday):
-        self._client = client
-
-    def list(self, athlete_id: str) -> Dict[str, Any]:
-        """List athlete's gear."""
-        return self._client.request("GET", f"/v1/athletes/{athlete_id}/gear")
-
-    def create(self, athlete_id: str, **kwargs: Any) -> Dict[str, Any]:
-        """Add a gear item."""
-        return self._client.request("POST", f"/v1/athletes/{athlete_id}/gear", json=kwargs)
-
-    def update(self, athlete_id: str, gear_id: str, **kwargs: Any) -> Dict[str, Any]:
-        """Update a gear item."""
-        return self._client.request("PATCH", f"/v1/athletes/{athlete_id}/gear/{gear_id}", json=kwargs)
-
-    def delete(self, athlete_id: str, gear_id: str) -> None:
-        """Delete a gear item."""
-        self._client.request("DELETE", f"/v1/athletes/{athlete_id}/gear/{gear_id}")
 
 
 class _KnowledgeResource:
