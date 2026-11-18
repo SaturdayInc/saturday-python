@@ -5,7 +5,19 @@ when the API sets them, ``param`` and ``request_id``.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
+
+# The 429 codes that reset at UTC midnight. Nothing succeeds before then.
+DAILY_LIMIT_CODES = (
+    "daily_call_limit_reached",
+    "intelligence_daily_limit_reached",
+    "athlete_free_daily_limit_reached",
+    "distinct_lookup_daily_limit_reached",
+)
+
+# The longest wait the client sleeps through inside one call, in seconds.
+MAX_RETRY_WAIT_SECONDS = 30
 
 
 class SaturdayError(Exception):
@@ -19,6 +31,7 @@ class SaturdayError(Exception):
         code: str = "unknown",
         param: Optional[str] = None,
         request_id: Optional[str] = None,
+        retry_after: Optional[float] = None,
     ):
         super().__init__(message)
         self.message = message
@@ -27,6 +40,8 @@ class SaturdayError(Exception):
         self.code = code
         self.param = param
         self.request_id = request_id
+        # Seconds to wait, from the Retry-After header, when the response carried one (429s and 503s).
+        self.retry_after = retry_after
 
     @classmethod
     def from_response(cls, status: int, error_body: Dict[str, Any], retry_after: Optional[str] = None) -> "SaturdayError":
@@ -40,6 +55,14 @@ class SaturdayError(Exception):
             "param": detail.get("param"),
             "request_id": detail.get("request_id"),
         }
+        seconds: Optional[float] = None
+        if retry_after is not None:
+            try:
+                seconds = max(0.0, float(retry_after))
+            except ValueError:
+                seconds = None
+            if seconds is not None and seconds.is_integer():
+                seconds = int(seconds)
         if status in (400, 422):
             return ValidationError(**kwargs)
         if status == 401:
@@ -49,14 +72,8 @@ class SaturdayError(Exception):
         if status == 404:
             return NotFoundError(**kwargs)
         if status == 429:
-            seconds: Optional[int] = None
-            if retry_after is not None:
-                try:
-                    seconds = max(0, int(retry_after))
-                except ValueError:
-                    seconds = None
             return RateLimitError(**kwargs, retry_after=seconds)
-        return cls(**kwargs)
+        return cls(**kwargs, retry_after=seconds)
 
 
 class AuthenticationError(SaturdayError):
@@ -68,20 +85,35 @@ class PermissionDeniedError(SaturdayError):
 
 
 class RateLimitError(SaturdayError):
-    """429.
+    """429. Read ``code``:
 
-    A rate limit or pacing carries ``retry_after`` in seconds; the client waits out one of 30
-    seconds or less itself. A daily ceiling has no ``retry_after`` (``daily_limit`` is True) and
-    resets at midnight UTC.
+    - ``rate_limit_exceeded``: a short-term throttle. The client waits ``retry_after`` and retries.
+    - ``catalog_paced``: new products are paced; ``retry_after`` is the seconds until they resume.
+      The client retries a wait of 30 seconds or less; a longer one is raised to you.
+    - ``rate_limited``: an unusual request pattern; calculations are blocked for ``retry_after`` seconds.
+    - ``daily_call_limit_reached``, ``intelligence_daily_limit_reached``,
+      ``athlete_free_daily_limit_reached``, ``distinct_lookup_daily_limit_reached``: a daily
+      ceiling. ``daily_limit`` is True and ``resets_at`` is the UTC midnight it resets at. Never retried.
     """
 
-    def __init__(self, *args: Any, retry_after: Optional[int] = None, **kwargs: Any):
-        super().__init__(*args, **kwargs)
-        self.retry_after = retry_after
+    def __init__(self, *args: Any, retry_after: Optional[float] = None, now: Optional[datetime] = None, **kwargs: Any):
+        super().__init__(*args, retry_after=retry_after, **kwargs)
+        # An API that predates the daily codes marks a daily ceiling by sending no Retry-After.
+        self.daily_limit = self.code in DAILY_LIMIT_CODES or retry_after is None
+        self.resets_at: Optional[datetime] = None
+        if self.daily_limit:
+            now = now or datetime.now(timezone.utc)
+            if retry_after is not None:
+                self.resets_at = now + timedelta(seconds=retry_after)
+            else:
+                self.resets_at = datetime(now.year, now.month, now.day, tzinfo=timezone.utc) + timedelta(days=1)
 
     @property
-    def daily_limit(self) -> bool:
-        return self.retry_after is None
+    def retryable(self) -> bool:
+        """Whether the client retries this itself: a throttle or a short pacing wait, never a daily ceiling or a block."""
+        if self.daily_limit or self.code == "rate_limited" or self.retry_after is None:
+            return False
+        return self.retry_after <= MAX_RETRY_WAIT_SECONDS
 
 
 class ValidationError(SaturdayError):

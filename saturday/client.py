@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 import httpx
 
-from saturday.errors import RateLimitError, SaturdayError
+from saturday.errors import MAX_RETRY_WAIT_SECONDS, RateLimitError, SaturdayError
 from saturday.types import (
     Activity,
     ActivityFeedback,
@@ -77,8 +77,6 @@ SDK_VERSION = "0.8.0"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 3
-# The longest Retry-After a 429 is waited out for. A longer one is a block that lasts minutes.
-MAX_RETRY_AFTER_S = 30
 _RETRY_SAFE_ACTIVITY_POST = re.compile(r"^/v1/athletes/[^/]+/(activities/[^/]+/(calculate|prep)|export)$")
 
 
@@ -111,7 +109,7 @@ class Saturday:
         api_key: A partner key (``sk_live_...`` or ``sk_test_...``) or a coach key (``cp_live_...`` or ``cp_test_...``).
         base_url: Defaults to https://api.saturday.fit.
         timeout: Per-request timeout in seconds. Defaults to 30.
-        max_retries: Retries for 429s whose ``Retry-After`` is 30 seconds or less and for 5xx responses (not on a POST that creates or changes a record). Defaults to 3; 0 disables retries.
+        max_retries: Retries for throttled or briefly paced 429s and for 5xx responses (not on a POST that creates or changes a record). Defaults to 3; 0 disables retries.
         bearer_token: An athlete's OAuth2 access token, sent in place of the API key.
 
     Example::
@@ -184,12 +182,11 @@ class Saturday:
         params: Optional[Dict[str, Any]] = None,
         raw: bool = False,
     ) -> Any:
-        """Send an authenticated request.
-
-        A 429 whose ``Retry-After`` is 30 seconds or less is retried after that wait; a 5xx is
-        retried after 1, 2 and 4 seconds, except on a POST that creates or changes a record, since
-        the server may have done the write. Any other 429 (a daily ceiling has no ``Retry-After``)
-        and every other 4xx raise at once.
+        """Send an authenticated request, retrying up to ``max_retries`` times where a retry can
+        succeed: a 429 throttle or short pacing wait (``RateLimitError.retryable``), and a 5xx after
+        its ``Retry-After`` or 1, 2 and 4 seconds, except on a POST that creates or changes a record,
+        since the server may have done the write. Daily ceilings, blocks, waits over 30 seconds and
+        every other 4xx raise at once.
         """
         last_error: Optional[SaturdayError] = None
 
@@ -214,11 +211,13 @@ class Saturday:
             last_error = error
 
             if isinstance(error, RateLimitError):
-                if error.daily_limit or error.retry_after > MAX_RETRY_AFTER_S:
+                if not error.retryable:
                     raise error
-                delay: float = error.retry_after
+                delay: float = error.retry_after  # type: ignore[assignment]
             elif response.status_code >= 500 and _retry_safe_on_server_error(method, path):
-                delay = 2 ** attempt
+                if error.retry_after is not None and error.retry_after > MAX_RETRY_WAIT_SECONDS:
+                    raise error
+                delay = error.retry_after if error.retry_after is not None else 2 ** attempt
             else:
                 raise error
             if attempt < self._max_retries:
@@ -568,7 +567,8 @@ class _OrganizationsResource:
         return self._client.request("GET", f"/v1/organizations/{_seg(org_id)}/subscriptions")
 
     def update_subscription(self, org_id: str, sub_id: str, **updates: Any) -> OrganizationSubscription:
-        """Update ``seats``, ``status`` or ``end_date``."""
+        """Update ``seats``, ``status``, ``start_date`` or ``end_date`` (Unix seconds). Any other
+        field is refused with ``ValidationError`` code ``unsupported_field``."""
         return self._client.request("PATCH", f"/v1/organizations/{_seg(org_id)}/subscriptions/{_seg(sub_id)}", json=updates)
 
     def add_licenses(self, org_id: str, sub_id: str, licenses: List[Dict[str, Any]]) -> LicenseListResponse:

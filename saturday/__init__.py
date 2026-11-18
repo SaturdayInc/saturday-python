@@ -16,6 +16,8 @@ Example::
 
 from saturday.client import SDK_VERSION, Saturday
 from saturday.errors import (
+    DAILY_LIMIT_CODES,
+    MAX_RETRY_WAIT_SECONDS,
     SaturdayError,
     AuthenticationError,
     PermissionDeniedError,
@@ -146,6 +148,8 @@ from saturday.types import (
 __version__ = SDK_VERSION
 __all__ = [
     "Saturday",
+    "DAILY_LIMIT_CODES",
+    "MAX_RETRY_WAIT_SECONDS",
     "SaturdayError",
     "AuthenticationError",
     "PermissionDeniedError",

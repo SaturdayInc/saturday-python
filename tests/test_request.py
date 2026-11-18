@@ -174,3 +174,67 @@ def test_31_second_retry_after_is_raised(make_client, monkeypatch):
     with pytest.raises(RateLimitError) as raised:
         client.onboarding.questions()
     assert raised.value.retry_after == 31
+
+
+def _too_many(code, headers=None):
+    return httpx.Response(429, json={"error": {"type": "rate_limit_error", "code": code, "message": code}}, headers=headers or {})
+
+
+@pytest.mark.parametrize("code", [
+    "daily_call_limit_reached", "intelligence_daily_limit_reached",
+    "athlete_free_daily_limit_reached", "distinct_lookup_daily_limit_reached",
+])
+def test_daily_codes_are_never_retried_and_carry_the_reset(make_client, monkeypatch, code):
+    from datetime import datetime, timezone
+    monkeypatch.setattr("saturday.client.time.sleep", lambda _: pytest.fail("a daily ceiling must not be slept on"))
+    calls = []
+    client = make_client(lambda r: calls.append(r) or _too_many(code, {"Retry-After": "20"}))
+    before = datetime.now(timezone.utc)
+    with pytest.raises(RateLimitError) as raised:
+        client.nutrition.calculate(activity_type="run", duration_min=60)
+    assert raised.value.daily_limit and not raised.value.retryable
+    assert (raised.value.resets_at - before).total_seconds() >= 19
+    assert len(calls) == 1
+
+
+def test_older_daily_ceiling_resets_at_next_utc_midnight():
+    from datetime import datetime, timezone
+    error = RateLimitError("Daily call limit reached", status=429, code="rate_limit_exceeded",
+                           now=datetime(2026, 11, 18, 22, 30, tzinfo=timezone.utc))
+    assert error.daily_limit
+    assert error.resets_at == datetime(2026, 11, 19, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("code, wait, calls", [
+    ("rate_limit_exceeded", "2", 2),
+    ("catalog_paced", "20", 2),
+    ("catalog_paced", "900", 1),
+    ("rate_limited", "5", 1),
+])
+def test_codes_decide_the_retry(make_client, monkeypatch, code, wait, calls):
+    monkeypatch.setattr("saturday.client.time.sleep", lambda _: None)
+    sent = []
+    responses = iter([_too_many(code, {"Retry-After": wait}), httpx.Response(200, json={"activity_types": [], "total": 0, "request_id": "r"})])
+
+    def handler(request):
+        sent.append(request)
+        return next(responses)
+
+    client = make_client(handler)
+    try:
+        client.reference.activity_types()
+    except RateLimitError as error:
+        assert error.retry_after == int(wait)
+    assert len(sent) == calls
+
+
+def test_503_retry_after_is_the_wait(make_client, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("saturday.client.time.sleep", sleeps.append)
+    responses = iter([
+        httpx.Response(503, json={"error": {"type": "api_error", "code": "service_unavailable", "message": "Try again"}}, headers={"Retry-After": "5"}),
+        httpx.Response(200, json={"activity_types": [], "total": 0, "request_id": "r"}),
+    ])
+    client = make_client(lambda _: next(responses))
+    assert client.reference.activity_types()["total"] == 0
+    assert sleeps == [5]
