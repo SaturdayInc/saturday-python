@@ -556,7 +556,7 @@ class _OrganizationsResource:
         self._client.request("DELETE", f"/v1/organizations/{_seg(org_id)}/offer")
 
     def create_subscription(self, org_id: str, *, type: str, seats: int, start_date: int, end_date: int) -> OrganizationSubscription:
-        """Create a seat subscription (dates in Unix milliseconds). Seat subscriptions are set up
+        """Create a seat subscription (dates in Unix seconds). Seat subscriptions are set up
         with Saturday: without an allowance on your account this raises ``PermissionError``
         (``organization_subscription_restricted``)."""
         return self._client.request(

@@ -1158,9 +1158,9 @@ class OrganizationSubscription(TypedDict):
     seats: int
     used_seats: int
     status: Literal["active", "expired", "cancelled"]
-    start_date: int  # Unix milliseconds.
-    end_date: int
-    created_at: int
+    start_date: int  # Unix seconds.
+    end_date: int  # Unix seconds.
+    created_at: int  # Unix seconds.
 
 
 class OrganizationSubscriptionListResponse(TypedDict):
@@ -1171,7 +1171,7 @@ class OrganizationSubscriptionListResponse(TypedDict):
 
 class _LicenseRequired(TypedDict):
     email: str
-    added_at: int
+    added_at: int  # Unix seconds.
     active: bool
 
 
