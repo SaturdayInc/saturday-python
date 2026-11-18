@@ -5,6 +5,7 @@ when the API sets them, ``param`` and ``request_id``.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -117,7 +118,20 @@ class RateLimitError(SaturdayError):
 
 
 class ValidationError(SaturdayError):
-    """400 or 422: the request is invalid. ``param`` names the field."""
+    """400 or 422: the request is invalid. ``param`` names the field, as a path into your body
+    (``legs[1].duration_mins``). For code ``unsupported_field`` (a field the request does not
+    take), ``suggestion`` is the field it was probably meant to be, or None when the API names none.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.suggestion: Optional[str] = _suggested_field(self.message) if self.code == "unsupported_field" else None
+
+
+def _suggested_field(message: str) -> Optional[str]:
+    """The field an unsupported_field message points to: ``Did you mean "x"?`` or ``Send "x"``."""
+    match = re.search(r'(?:Did you mean|Send) "([A-Za-z0-9_.\[\]]+)"', message or "")
+    return match.group(1) if match else None
 
 
 class NotFoundError(SaturdayError):

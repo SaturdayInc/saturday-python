@@ -70,7 +70,7 @@ Show `plan["attribution"]` wherever you show the numbers, and show every safety 
 A calculation carries exact per-hour numbers and totals only when the athlete's profile is complete and their tier is full; otherwise it carries ranges such as `"60-80"`. `precision["profile_complete"]` tells you which. `tier == "full"` alone does not mean exact.
 
 - `precision["missing_fields"]` lists what is still unanswered, most impactful first, with how much each answer would narrow the ranges. Collect those answers in your UI (`client.onboarding.questions()` gives the questions) or send the athlete to `precision["onboarding"]["url"]`.
-- Send `meal_before_min` and `is_race` on every call. Leaving either out returns ranges even for a complete profile.
+- Send every session input on every call: `intensity_level`, `thermal_stress_level`, `meal_before_min` and `is_race`. One left out returns ranges even for a complete profile, and `precision["message"]` names it apart from the profile answers the athlete still owes; `precision["onboarding"]` comes only with the latter.
 - Per-hour figures are whole numbers. For a fasted start (`meal_before_min` over 180) the totals include a 20-minute pre-load, and the per-hour figures spread the totals over the session plus those 20 minutes.
 - A zero may be omitted from the response, so read numbers with `.get(field, 0)`.
 - A new athlete's first calculation starts a 30-day trial of the full tier: 15 calls on the first day, then 5 a day. `trial_calls_remaining_today` and `trial_ends_at` show where it stands.
@@ -107,6 +107,8 @@ with Saturday(api_key="sk_test_...") as client:
         product_query="maurten gel 100",
         activity_type="run",
         duration_min=90,
+        intensity_level=7,
+        thermal_stress_level=5,
         meal_before_min=120,
         is_race=True,
     )
@@ -116,7 +118,48 @@ with Saturday(api_key="sk_test_...") as client:
 
 A stored activity uses `type` and `is_race_event`; a calculation uses `activity_type` and `is_race`. The API refuses the other spelling with a `ValidationError` whose `code` is `unsupported_field`.
 
-When the athlete's profile is missing answers, prep, product fit and compare plan from the middle of the athlete's ranges and say so in `plan_basis`. Product answers follow the athlete's Saturday subscription or trial: without one, `tier` is `"teaser"` and the response carries product categories in place of the fit.
+When the athlete's profile or the session is missing inputs, prep, product fit and compare plan from the middle of the athlete's ranges and say so in `plan_basis`: its `source` is `profile_incomplete`, `session_incomplete` or both, `missing_profile_fields` and `missing_session_inputs` list what is missing, and `onboarding` comes only when profile answers are. Show `plan_basis["message"]` with the plan. Product answers follow the athlete's Saturday subscription or trial: without one, `tier` is `"teaser"` and the response carries product categories in place of the fit.
+
+## Bricks and triathlons
+
+A brick or a triathlon is one session with legs, calculated as the Saturday app does it, as one continuous effort: send it as one call, never one per leg. Each leg carries its own effort and heat; `duration_min` is the legs' total and may be left out.
+
+```python
+from saturday import Saturday
+
+with Saturday(api_key="sk_test_...") as client:
+    brick = client.nutrition.calculate(
+        athlete_id="ATHLETE_ID",
+        activity_type="brick",
+        meal_before_min=120,
+        is_race=False,
+        legs=[
+            {"activity_type": "bike", "duration_min": 90, "intensity_level": 6, "thermal_stress_level": 6},
+            {"activity_type": "run", "duration_min": 30, "intensity_level": 7, "thermal_stress_level": 6},
+        ],
+    )
+    for leg in brick.get("legs", []):
+        print(f"{leg['duration_min']} min: {leg['total_carb_g']} g carbs")
+
+    stored = client.activities.create(
+        "ATHLETE_ID",
+        type="triathlon",
+        meal_before_min=240,
+        is_race_event=True,
+        legs=[
+            {"type": "swim", "duration_min": 30, "intensity_level": 7, "thermal_stress_level": 3},
+            {"type": "bike", "duration_min": 80, "intensity_level": 7, "thermal_stress_level": 6},
+            {"type": "run", "duration_min": 40, "intensity_level": 7, "thermal_stress_level": 7},
+        ],
+    )
+    calculated = client.activities.calculate_prescription("ATHLETE_ID", stored["id"])
+    print(calculated.get("prescription", {}).get("legs"))
+```
+
+- `legs` on an exact answer (calculate, batch, the stored prescription, import) is each leg's share, in order, as the Saturday app's leg cards show it. Answers with ranges carry no leg figures.
+- A leg's sport is `activity_type` on a calculation and `type` on an activity, as for a single session.
+- `activities.update` with `legs` replaces them; a brick or triathlon refuses a top-level effort or heat. Changing `type` to a single sport drops the legs.
+- `client.reference.activity_types()` lists the rules under `linked_session_types`. Product fit and compare size for a single sport; prep sizes a stored brick or triathlon as one session.
 
 ## Resources
 
@@ -186,7 +229,7 @@ with Saturday(api_key="cp_live_...") as client:
 
 ## Errors, retries and limits
 
-Every API error is a `SaturdayError` with `status`, `code`, `message`, `param`, `request_id` and `error_type`. Subclasses: `ValidationError` (400), `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (404), `RateLimitError` (429).
+Every API error is a `SaturdayError` with `status`, `code`, `message`, `param`, `request_id` and `error_type`. Subclasses: `ValidationError` (400, with `suggestion` for a field the request does not take), `AuthenticationError` (401), `PermissionDeniedError` (403), `NotFoundError` (404), `RateLimitError` (429).
 
 ```python
 from saturday import RateLimitError, Saturday, ValidationError
@@ -200,7 +243,10 @@ with Saturday(api_key="sk_test_...") as client:
         else:
             print(f"{error.code}: try again in {error.retry_after} s")
     except ValidationError as error:
-        print(f"Fix {error.param}: {error}")
+        if error.code == "unsupported_field":
+            print(f"{error.param} is not a field of this request; send {error.suggestion or 'the documented fields'}")
+        else:
+            print(f"Fix {error.param}: {error}")
 ```
 
 A `RateLimitError`'s `code` says which limit was hit:

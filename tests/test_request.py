@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from saturday import NotFoundError, PermissionDeniedError, RateLimitError, Saturday
+from saturday import NotFoundError, PermissionDeniedError, RateLimitError, Saturday, ValidationError
 
 
 @pytest.fixture
@@ -238,3 +238,26 @@ def test_503_retry_after_is_the_wait(make_client, monkeypatch):
     client = make_client(lambda _: next(responses))
     assert client.reference.activity_types()["total"] == 0
     assert sleeps == [5]
+
+
+@pytest.mark.parametrize("param, message, suggestion", [
+    ("legs[1].duration_mins", '"legs[1].duration_mins" is not a field of this request, so its value would not be used. Did you mean "duration_min"? See https://docs.saturday.fit/guides/nutrition-calculation', "duration_min"),
+    ("weight_kg", '"weight_kg" is not a field of this request, so its value would not be used. Send "athlete_weight_kg". See https://docs.saturday.fit/guides/nutrition-calculation', "athlete_weight_kg"),
+    ("zzz", '"zzz" is not a field of this request, so its value would not be used. See https://docs.saturday.fit/guides/nutrition-calculation', None),
+])
+def test_unsupported_field_names_the_field_and_the_suggestion(make_client, param, message, suggestion):
+    client = make_client(lambda _: httpx.Response(400, json={
+        "error": {"type": "invalid_request", "code": "unsupported_field", "param": param, "message": message},
+    }))
+    with pytest.raises(ValidationError) as raised:
+        client.nutrition.calculate(activity_type="bike", duration_min=60)
+    assert (raised.value.param, raised.value.suggestion) == (param, suggestion)
+
+
+def test_other_validation_errors_carry_no_suggestion(make_client):
+    client = make_client(lambda _: httpx.Response(400, json={
+        "error": {"type": "invalid_request", "code": "invalid_value", "param": "legs", "message": 'Send "legs" with 2 to 10 legs.'},
+    }))
+    with pytest.raises(ValidationError) as raised:
+        client.nutrition.calculate(activity_type="brick", legs=[])
+    assert raised.value.suggestion is None

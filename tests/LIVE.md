@@ -9,7 +9,7 @@ python -m pytest tests/test_live.py
 ```
 
 - The key must be a test key (`sk_test_`); the suite refuses a live key.
-- One run makes about 65 calls, of which about 15 are calculations, and creates 3 athletes, 2 activities, an organization, an API key and a webhook pointed at `https://example.com`. It erases the athletes and deletes the activity, key and webhook it created; the organization stays.
+- One run makes about 95 calls, of which about 30 are calculations, and creates 4 athletes (one of them with a simulated subscription, for the brick and triathlon block), 4 activities, an organization, an API key and a webhook pointed at `https://example.com`. It erases the athletes, with their activities, and deletes the key and webhook it created; the organization stays.
 - The catalog products it sizes are Maurten Gel 100 and Tailwind Endurance Fuel.
 - `athletes.erase` and `testing.simulate_subscription` need the test environment.
 

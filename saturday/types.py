@@ -2,6 +2,23 @@
 
 from typing import Any, Dict, List, Literal, Optional, TypedDict
 
+ActivityType = Literal["bike", "run", "swim", "row", "ski", "lift", "hike"]
+"""A single sport. Each leg of a brick or triathlon is one of these."""
+
+LinkedSessionType = Literal["brick", "triathlon"]
+"""A session made of 2 to 10 legs, each a single sport."""
+
+SessionType = Literal["bike", "run", "swim", "row", "ski", "lift", "hike", "brick", "triathlon"]
+"""What a calculation or an activity can be: a single sport, or a brick or triathlon with legs."""
+
+SessionInput = Literal["intensity_level", "thermal_stress_level", "meal_before_min", "is_race"]
+"""A session input a plan from ranges can be missing."""
+
+PlanBasisSource = Literal["profile_incomplete", "session_incomplete", "profile_and_session_incomplete", "stored_ranges"]
+"""What a plan from ranges is missing: the athlete's profile answers, the session's inputs, or
+both. ``stored_ranges`` is an activity's stored ranges with nothing missing that can be named now
+(the athlete has answered since): calculate the activity again."""
+
 
 class SafetyMetadata(TypedDict):
     max_safe_fluid_ml_per_hr: int
@@ -56,8 +73,43 @@ class _PrecisionRequired(TypedDict):
 
 class Precision(_PrecisionRequired, total=False):
     missing_fields: List[MissingField]
+    # With a partner API key: names the athlete's profile answers (the onboarding link collects
+    # them) apart from the session inputs your request or activity left out, and where to send those.
     message: str
+    # With a partner API key, present only when profile answers are missing.
     onboarding: OnboardingInvite
+
+
+class LegPrescription(TypedDict):
+    """One leg's share of a brick's or triathlon's prescription, as the Saturday app's leg cards
+    show it. The legs' totals add up to the session's totals before the session's own rounding.
+    Per hour is over the leg's minutes; the first leg of a fasted start adds the 20-minute pre-load."""
+
+    duration_min: int
+    total_carb_g: int
+    total_sodium_mg: int
+    total_fluid_ml: int
+    carb_g_per_hr: float
+    sodium_mg_per_hr: float
+    fluid_ml_per_hr: float
+
+
+class CalculateLeg(TypedDict):
+    """One leg of a brick or triathlon on a calculate request. The legs together may be at most 2160 minutes."""
+
+    activity_type: ActivityType
+    duration_min: int  # 5 to 2160.
+    intensity_level: int  # 1 to 9 (lift and hike: 1 to 3; a higher value computes as 3).
+    thermal_stress_level: int  # 1 (cold, dry) to 9 (hot, humid).
+
+
+class ActivityLeg(TypedDict):
+    """One leg of a stored brick or triathlon. The legs together may be at most 2160 minutes."""
+
+    type: ActivityType
+    duration_min: int  # 5 to 2160.
+    intensity_level: int  # 1 to 9 (lift and hike: 1 to 3; a higher value is stored as 3).
+    thermal_stress_level: int  # 1 (cold, dry) to 9 (hot, humid).
 
 
 class TrialMetadata(TypedDict, total=False):
@@ -86,6 +138,9 @@ class NutritionCalculateResponse(_CalculationRequired, TrialMetadata, total=Fals
     fluid_range_ml_per_hr: str
     precision: Precision
     subscription_cta: SubscriptionCTA
+    # A brick or triathlon with exact numbers: each leg's share, in the order of the legs sent.
+    # Absent for a single sport and on answers with ranges.
+    legs: List[LegPrescription]
 
 
 class _ActivityPrescriptionRequired(TypedDict):
@@ -108,6 +163,9 @@ class ActivityPrescription(_ActivityPrescriptionRequired, total=False):
     fluid_range_ml_per_hr: str
     carriage_tactic_id: str
     activity_subtype: str
+    # A brick or triathlon with exact numbers: each leg's share, in the order of the activity's
+    # legs. Absent for a single sport and on a prescription of ranges.
+    legs: List[LegPrescription]
 
 
 class PrescriptionEnvelope(_CalculationRequired, TrialMetadata, total=False):
@@ -137,13 +195,16 @@ class _ActivityRequired(TypedDict):
     id: str
     athlete_id: str
     partner_id: str
-    type: str
-    duration_min: int
+    type: SessionType
+    duration_min: int  # For a brick or triathlon, its legs' total.
     created_at: int  # Epoch seconds.
     updated_at: int  # Epoch seconds.
 
 
 class Activity(_ActivityRequired, total=False):
+    # A brick's or triathlon's legs, in order. Absent for a single sport.
+    legs: List[ActivityLeg]
+    # Absent for a brick or triathlon, whose legs carry it.
     intensity_level: int
     thermal_stress_level: int
     is_race_event: bool
@@ -344,14 +405,19 @@ class BatchAthleteResponse(BatchSummary):
 
 
 class _ImportActivityRequired(TypedDict):
-    type: Literal["bike", "run", "swim", "row", "ski", "lift", "hike"]
-    duration_min: int
+    type: SessionType
 
 
 class ImportActivityRequest(_ImportActivityRequired, total=False):
+    """One activity to import. ``duration_min`` is required for a single sport; a brick or
+    triathlon sends ``legs`` (its minutes are their total) and carries effort and heat on them."""
+
+    duration_min: int
+    legs: List[ActivityLeg]
     intensity_level: int
     thermal_stress_level: int
     is_race_event: bool
+    meal_before_min: int
     external_id: str
     calculate: bool
 
@@ -748,16 +814,23 @@ class ProductFitDetail(TypedDict):
 
 
 class _PlanBasisRequired(TypedDict):
-    source: Literal["range_midpoint"]
-    message: str
+    source: PlanBasisSource
+    message: str  # Names what is missing and where each goes. Show it with the plan.
     carb_range_g_per_hr: str
     sodium_range_mg_per_hr: str
     fluid_range_ml_per_hr: str
 
 
 class PlanBasis(_PlanBasisRequired, total=False):
-    """Present when a plan uses the middle of an incomplete profile's per-hour ranges."""
+    """Present when a plan uses the middle of the per-hour ranges because the athlete's profile
+    or the session is missing inputs. With every input in, it is absent."""
 
+    # The athlete's profile answers the plan lacks, by the names precision.missing_fields uses.
+    missing_profile_fields: List[str]
+    # The session inputs the plan lacks: send them in the request (fit, compare), or set them on
+    # the activity (prep).
+    missing_session_inputs: List[SessionInput]
+    # Present only when profile answers are missing.
     onboarding: OnboardingInvite
 
 
@@ -849,15 +922,33 @@ class PrepResponse(_PrepResponseRequired, total=False):
 
 
 class ActivityTypeInfo(TypedDict):
-    id: str
+    id: ActivityType
     name: str
     description: str
 
 
-class ActivityTypesResponse(TypedDict):
-    activity_types: List[ActivityTypeInfo]
-    total: int
+class LinkedSessionTypeInfo(TypedDict):
+    """A session type made of legs, and the rules for its legs."""
+
+    id: LinkedSessionType
+    name: str
+    description: str
+    min_legs: int
+    max_legs: int
+    leg_types: List[ActivityType]  # The sports a leg may be.
+    min_leg_duration_min: int
+    max_duration_min: int  # The most minutes the legs may add up to.
+
+
+class _ActivityTypesRequired(TypedDict):
+    activity_types: List[ActivityTypeInfo]  # The single sports.
+    total: int  # How many entries activity_types holds.
     request_id: str
+
+
+class ActivityTypesResponse(_ActivityTypesRequired, total=False):
+    # brick and triathlon, with the rules for their legs. Sent to a partner API key.
+    linked_session_types: List[LinkedSessionTypeInfo]
 
 
 class _SettingsFieldRequired(TypedDict):
@@ -985,11 +1076,12 @@ class _ApiKeyInfoRequired(TypedDict):
     environment: Literal["live", "test"]
     scopes: List[str]
     created_at: int  # Unix milliseconds.
+    last_used_at: int  # Unix milliseconds of the last authenticated call; 0 when never used.
     revoked: bool
 
 
-class ApiKeyInfo(_ApiKeyInfoRequired, total=False):
-    last_used_at: int  # Unix milliseconds; absent before first use.
+class ApiKeyInfo(_ApiKeyInfoRequired):
+    pass
 
 
 class ApiKeyListResponse(TypedDict):

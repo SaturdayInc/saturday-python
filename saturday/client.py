@@ -237,10 +237,19 @@ class _NutritionResource:
     def calculate(self, **request: Any) -> NutritionCalculateResponse:
         """Calculate a prescription for one session.
 
-        Required: ``activity_type``, ``duration_min``. Send ``athlete_id`` to use a stored
-        athlete, and ``meal_before_min`` (over 180 plans a fasted start) and ``is_race`` for
-        exact numbers. A field name close to a real one (``type``, ``weight_kg``,
-        ``is_race_event``) is refused with ``ValidationError`` code ``unsupported_field``.
+        Required: ``activity_type``, and ``duration_min`` for a single sport. Send ``athlete_id``
+        to use a stored athlete, and every session input (``intensity_level``,
+        ``thermal_stress_level``, ``meal_before_min``: over 180 plans a fasted start, ``is_race``)
+        for exact numbers.
+
+        A brick or triathlon is one call: ``activity_type="brick"`` (or ``"triathlon"``) with
+        ``legs``, 2 to 10 dicts of ``activity_type``, ``duration_min``, ``intensity_level`` and
+        ``thermal_stress_level``; leave the top-level effort and heat out. The answer's ``legs``
+        gives each leg's share.
+
+        A field the request does not take is refused with ``ValidationError`` code
+        ``unsupported_field``: ``param`` names it and ``suggestion`` the field it was probably
+        meant to be.
         """
         return self._client.request("POST", "/v1/nutrition/calculate", json=request)
 
@@ -251,9 +260,10 @@ class _NutritionResource:
     def product_fit(self, **request: Any) -> ProductFitResponse:
         """Size one catalog product against the athlete's prescription for a session.
 
-        Required: ``athlete_id``, ``activity_type``, ``duration_min`` and ``product_id`` or
-        ``product_query``. Optional: ``intensity_level``, ``thermal_stress_level``,
-        ``meal_before_min``, ``is_race``.
+        Required: ``athlete_id``, ``activity_type`` (a single sport), ``duration_min`` and
+        ``product_id`` or ``product_query``. Send ``intensity_level``, ``thermal_stress_level``,
+        ``meal_before_min`` and ``is_race`` too: one left out computes at its everyday value and
+        the plan is the middle of the athlete's ranges, with ``plan_basis`` naming it.
         """
         return self._client.request("POST", "/v1/nutrition/products/fit", json=request)
 
@@ -348,8 +358,11 @@ class _ActivitiesResource:
         self._client = client
 
     def create(self, athlete_id: str, **activity: Any) -> Activity:
-        """Store a session. The fields are ``type`` and ``is_race_event``; ``activity_type`` and
-        ``is_race`` are refused with ``ValidationError`` code ``unsupported_field``."""
+        """Store a session: one sport with ``duration_min``, or ``type="brick"`` (or
+        ``"triathlon"``) with ``legs``, 2 to 10 dicts of ``type``, ``duration_min``,
+        ``intensity_level`` and ``thermal_stress_level``. The fields are ``type`` and
+        ``is_race_event``; any field the request does not take (``activity_type`` and ``is_race``
+        included) is refused with ``ValidationError`` code ``unsupported_field``."""
         return self._client.request("POST", f"/v1/athletes/{_seg(athlete_id)}/activities", json=activity)
 
     def get(self, athlete_id: str, activity_id: str) -> Activity:
@@ -362,6 +375,11 @@ class _ActivitiesResource:
         )
 
     def update(self, athlete_id: str, activity_id: str, **updates: Any) -> Activity:
+        """Change the fields you send. ``legs`` replaces a brick's or triathlon's legs and sets
+        ``duration_min`` to their total. Changing ``type`` to brick or triathlon needs ``legs`` in
+        the same call unless the activity holds legs already; changing it to a single sport removes
+        the legs. A brick or triathlon refuses ``intensity_level``, ``thermal_stress_level`` and a
+        ``duration_min`` other than its legs' total: change its legs instead."""
         return self._client.request("PATCH", f"/v1/athletes/{_seg(athlete_id)}/activities/{_seg(activity_id)}", json=updates)
 
     def delete(self, athlete_id: str, activity_id: str) -> None:
@@ -424,8 +442,10 @@ class _ReferenceResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def activity_types(self) -> ActivityTypesResponse:
-        return self._client.request("GET", "/v1/activity-types")
+    def activity_types(self, *, activity_type: Optional[str] = None) -> ActivityTypesResponse:
+        """The single sports, and with a partner API key ``linked_session_types``: brick and
+        triathlon with the rules for their legs. ``activity_type`` narrows both lists to that type."""
+        return self._client.request("GET", "/v1/activity-types", params=_params(activity_type=activity_type))
 
     def settings_schema(self) -> SettingsSchemaResponse:
         return self._client.request("GET", "/v1/settings/schema")
