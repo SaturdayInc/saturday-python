@@ -692,7 +692,9 @@ class _IntegrationsResource:
     def disconnect(self, provider: str, athlete_id: str) -> IntegrationDisconnectResponse:
         """End the connection you supplied for the athlete with ``sync``: it is revoked at the
         provider and its tokens are removed. Activities already synced stay. A linked athlete's own
-        connection to the provider in their Saturday account is not changed."""
+        connection to the provider in their Saturday account is not changed. A provider the athlete
+        never connected raises ``NotFoundError`` (code ``integration_not_found``), and nothing
+        reaches the provider."""
         return self._client.request("POST", f"/v1/integrations/{_seg(provider)}/disconnect", json={"athlete_id": athlete_id})
 
 

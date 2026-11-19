@@ -25,7 +25,8 @@ PlanBasisSource = Literal[
 """Why a plan is from ranges: the athlete's profile answers are missing, the session's inputs are,
 or both. ``stored_ranges`` is an activity's stored ranges with nothing missing that can be named now
 (the athlete has answered since): calculate the activity again. ``trial_allowance``: the athlete's
-trial has used today's calls, or this profile is past the trial's allowance of profiles;
+trial has used today's calls or given all its exact answers, or this profile is past the trial's
+allowance of profiles;
 ``message`` says which, in words you can show the athlete. ``simulation_allowance`` (test
 environment only): the athlete's simulated subscription has given its allowance."""
 
@@ -135,8 +136,9 @@ class ActivityLeg(TypedDict):
 
 
 class TrialMetadata(TypedDict, total=False):
-    """Trial and sandbox fields on a calculation. The trial's length is ``rate_limits.trial_days``
-    on ``partner.get()``."""
+    """Trial and sandbox fields on a calculation. ``partner.get()`` gives the trial's length in
+    ``rate_limits.trial_days`` and the exact answers it gives in all in
+    ``rate_limits.trial_answers``."""
 
     tier_source: str
     trial_ends_at: int  # When the trial ends, Unix seconds.
@@ -151,8 +153,11 @@ class TrialMetadata(TypedDict, total=False):
     # (rate_limits.trial_profiles_per_athlete), so this new one is answered in ranges. Earlier
     # profiles stay exact.
     trial_profile_limit_reached: bool
-    # With trial_start_deferred or trial_profile_limit_reached, why these numbers are ranges, in
-    # words you can show the athlete.
+    # The athlete's trial has given all its exact answers (rate_limits.trial_answers), so these
+    # numbers are ranges until the athlete subscribes.
+    trial_answers_used_up: bool
+    # With trial_start_deferred, trial_profile_limit_reached or trial_answers_used_up, why these
+    # numbers are ranges, in words you can show the athlete.
     trial_note: str
     # Test environment only: the athlete's simulated subscription has given its allowance of exact
     # answers or distinct profiles, so these numbers are ranges.
@@ -1190,6 +1195,9 @@ class PartnerRateLimits(TypedDict):
     # ranges with trial_profile_limit_reached. None when the key has no such bound.
     trial_profiles_per_athlete: Optional[int]
     trial_days: int  # Days an athlete's trial lasts from its first exact answer.
+    # Exact answers one athlete's trial gives in all, however the days fall; the next answer gets
+    # ranges with trial_answers_used_up. None when the key has no such bound.
+    trial_answers: Optional[int]
 
 
 class PartnerAccount(TypedDict):
