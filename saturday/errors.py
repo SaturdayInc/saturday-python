@@ -98,7 +98,8 @@ class RateLimitError(SaturdayError):
     """
 
     def __init__(self, *args: Any, retry_after: Optional[float] = None, now: Optional[datetime] = None, **kwargs: Any):
-        super().__init__(*args, retry_after=retry_after, **kwargs)
+        kwargs["retry_after"] = retry_after
+        super().__init__(*args, **kwargs)
         # An API that predates the daily codes marks a daily ceiling by sending no Retry-After.
         self.daily_limit = self.code in DAILY_LIMIT_CODES or retry_after is None
         self.resets_at: Optional[datetime] = None
