@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from saturday import NotFoundError, PermissionDeniedError, Saturday, ValidationError
+from saturday import ConflictError, NotFoundError, PermissionDeniedError, Saturday, ValidationError
 
 BASE = os.environ.get("SATURDAY_LIVE_BASE_URL")
 KEY = os.environ.get("SATURDAY_LIVE_API_KEY")
@@ -121,9 +121,16 @@ def exact(plan):
 def test_main_flows(live):
     client, capture, run = live
 
-    capture("discovery", "Dict", client.meta.discovery())
+    discovery = capture("discovery", "DiscoveryResponse", client.meta.discovery())
+    # A key comes with a paid Saturday plan: the API names the page and no price.
+    assert discovery["get_a_key"]["page"] == "https://saturday.fit/api"
+    assert discovery["get_a_key"]["athletes_per_key"] > 0
+    assert not re.search(r"\$\d", json.dumps(discovery))
     catalog = capture("errors", "ErrorCatalogResponse", client.meta.errors())
-    assert "unsupported_field" in [e["code"] for e in catalog["errors"]]
+    codes = [e["code"] for e in catalog["errors"]]
+    for code in ("unsupported_field", "athlete_exists", "plan_inactive", "simulated_subscriber_daily_limit_reached", "provider_erasure_incomplete"):
+        assert code in codes, code
+    assert "payment_error" not in codes
     capture("health", "HealthResponse", client.meta.health())
     types = capture("activity_types", "ActivityTypesResponse", client.reference.activity_types())
     assert [t["id"] for t in types["linked_session_types"]] == ["brick", "triathlon"]
@@ -137,12 +144,22 @@ def test_main_flows(live):
     assert complete["profile_complete"] is True
     partial = client.athletes.create(external_id=f"{run}-b", weight_kg=70)
     capture("athlete_list", "AthleteListResponse", client.athletes.list(external_id=f"{run}-a"))
+    # One athlete per external_id: a retried create, and a PATCH onto a taken id, change nothing and name the holder.
+    with pytest.raises(ConflictError) as again:
+        client.athletes.create(external_id=f"{run}-a", **COMPLETE)
+    assert (again.value.code, again.value.athlete_id) == ("athlete_exists", complete["id"])
+    with pytest.raises(ConflictError) as taken:
+        client.athletes.update(partial["id"], external_id=f"{run}-a")
+    assert taken.value.athlete_id == complete["id"]
+    assert [a["id"] for a in client.athletes.list(external_id=f"{run}-a")["athletes"]] == [complete["id"]]
     assert client.athletes.update(complete["id"], name="Live Suite")["name"] == "Live Suite"
     settings = client.athletes.update_settings(complete["id"], **{**COMPLETE["settings"], "sweat_level": 6})
     assert settings["sweat_level"] == 6
     capture("fueling_profile", "FuelingProfile", client.athletes.get_fueling_profile(complete["id"]))
-    batch = capture("athletes_batch", "BatchAthleteResponse", client.athletes.batch_create([{"external_id": f"{run}-c"}, {"sex": "female"}]))
+    batch = capture("athletes_batch", "BatchAthleteResponse", client.athletes.batch_create(
+        [{"external_id": f"{run}-c"}, {"sex": "female"}, {"external_id": f"{run}-a"}]))
     assert batch["errors"][0]["index"] == 1
+    assert (batch["errors"][1]["index"], batch["errors"][1]["code"], batch["errors"][1]["athlete_id"]) == (2, "athlete_exists", complete["id"])
     client.athletes.erase(batch["created"][0]["id"])
 
     # Calculation
@@ -193,6 +210,15 @@ def test_main_flows(live):
     ]))
     assert prep["prescription"]["carb_g"] == stored["prescription"]["total_carb_g"]
     capture("feedback", "ActivityFeedback", client.activities.submit_feedback(complete["id"], activity["id"], rating=4, notes="live suite"))
+    # A field sent at its stored value keeps the prescription; a change to the session removes it until the next calculate.
+    client.activities.update(complete["id"], activity["id"], intensity_level=6, external_id=f"{run}-w1b")
+    assert client.activities.get_prescription(complete["id"], activity["id"])["prescription"]["total_carb_g"] == stored["prescription"]["total_carb_g"]
+    assert "prescription" not in client.activities.update(complete["id"], activity["id"], intensity_level=8)
+    with pytest.raises(NotFoundError) as outdated:
+        client.activities.get_prescription(complete["id"], activity["id"])
+    assert outdated.value.code == "prescription_not_found"
+    fresh = client.activities.calculate_prescription(complete["id"], activity["id"])
+    assert client.activities.get_prescription(complete["id"], activity["id"])["prescription"]["total_carb_g"] == fresh["prescription"]["total_carb_g"]
     imported = capture("activity_import", "ActivityImportResponse", client.activities.import_activities(complete["id"], [
         {"type": "run", "duration_min": 45, "intensity_level": 5, "meal_before_min": 120, "is_race_event": False, "external_id": f"{run}-i1"},
     ], calculate=True))
@@ -226,7 +252,8 @@ def test_main_flows(live):
     assert not client.testing.simulate_subscription(partial["id"], active=False)["simulated_active"]
 
     # Partner account
-    capture("partner", "PartnerAccount", client.partner.get())
+    account = capture("partner", "PartnerAccount", client.partner.get())
+    assert account["rate_limits"]["trial_days"] > 0
     usage = capture("usage", "UsageResponse", client.partner.usage())
     assert usage["by_endpoint"] and all(endpoint.startswith("/v1/") for endpoint in usage["by_endpoint"])
     capture("usage_daily", "DailyUsageResponse", client.partner.usage_daily())
@@ -281,7 +308,12 @@ def test_main_flows(live):
     client.athletes.revoke_consent(complete["id"], consent["id"])
     exported = capture("export", "AthleteDataExport", client.athletes.export(complete["id"]))
     assert abs(exported["exported_at"] - time.time()) < 600
-    capture("integration_status", "IntegrationStatusResponse", client.integrations.status("strava", complete["id"]))
+    for provider in ("strava", "training_peaks"):
+        with pytest.raises(ValidationError) as refused_provider:
+            client.integrations.sync(provider, athlete_id=complete["id"], access_token="not-a-token")
+        assert refused_provider.value.code == "invalid_provider"
+    status = capture("integration_status", "IntegrationStatusResponse", client.integrations.status("intervals_icu", complete["id"]))
+    assert status["status"]["connected"] is False
     client.athletes.erase(partial["id"])
     with pytest.raises(NotFoundError):
         client.athletes.get(partial["id"])
@@ -368,6 +400,9 @@ def test_linked_sessions(live):
     with pytest.raises(ValidationError) as wrong_count:
         client.activities.prep(aid, stored["id"], legs=[{"products": []}])
     assert (wrong_count.value.code, wrong_count.value.param) == ("invalid_value", "legs")
+    with pytest.raises(ValidationError) as both:
+        client.activities.prep(aid, stored["id"], products=[{"product_query": "maurten gel 100"}], legs=[{"products": []}, {"products": []}])
+    assert (both.value.code, both.value.param) == ("invalid_value", "products")
 
     # Fit and compare size the whole session at the top level and each leg's share under legs.
     brick_fit = capture("product_fit_brick", "ProductFitResponse", client.nutrition.product_fit(
@@ -410,6 +445,8 @@ def test_linked_sessions(live):
     assert minutes.value.param == "duration_min"
     longer = client.activities.update(aid, stored["id"], legs=[activity_legs[0], {**activity_legs[1], "duration_min": 45}])
     assert longer["duration_min"] == 135
+    with pytest.raises(NotFoundError):
+        client.activities.get_prescription(aid, stored["id"])
     assert client.activities.calculate_prescription(aid, stored["id"])["prescription"]["total_carb_g"] > brick["total_carb_g"]
     single = client.activities.update(aid, stored["id"], type="run", duration_min=60, intensity_level=5, thermal_stress_level=5)
     assert single["type"] == "run" and "legs" not in single

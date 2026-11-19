@@ -14,10 +14,21 @@ SessionType = Literal["bike", "run", "swim", "row", "ski", "lift", "hike", "bric
 SessionInput = Literal["intensity_level", "thermal_stress_level", "meal_before_min", "is_race"]
 """A session input a plan from ranges can be missing."""
 
-PlanBasisSource = Literal["profile_incomplete", "session_incomplete", "profile_and_session_incomplete", "stored_ranges"]
-"""What a plan from ranges is missing: the athlete's profile answers, the session's inputs, or
-both. ``stored_ranges`` is an activity's stored ranges with nothing missing that can be named now
-(the athlete has answered since): calculate the activity again."""
+PlanBasisSource = Literal[
+    "profile_incomplete",
+    "session_incomplete",
+    "profile_and_session_incomplete",
+    "stored_ranges",
+    "trial_allowance",
+    "simulation_allowance",
+]
+"""Why a plan is from ranges: the athlete's profile answers are missing, the session's inputs are,
+or both. ``stored_ranges`` is an activity's stored ranges with nothing missing that can be named now
+(the athlete has answered since): calculate the activity again. ``trial_allowance``: the athlete's
+trial has used today's calls or given all its exact answers, or this profile is past the trial's
+allowance of profiles;
+``message`` says which, in words you can show the athlete. ``simulation_allowance`` (test
+environment only): the athlete's simulated subscription has given its allowance."""
 
 
 class SafetyMetadata(TypedDict):
@@ -125,11 +136,33 @@ class ActivityLeg(TypedDict):
 
 
 class TrialMetadata(TypedDict, total=False):
+    """Trial and sandbox fields on a calculation. ``partner.get()`` gives the trial's length in
+    ``rate_limits.trial_days`` and the exact answers it gives in all in
+    ``rate_limits.trial_answers``."""
+
     tier_source: str
     trial_ends_at: int  # When the trial ends, Unix seconds.
     trial_calls_remaining_today: int
+    # The athlete's trial has used today's calls, so these numbers are ranges; trial_cap_note says so.
     trial_cap_reached: bool
     trial_cap_note: str
+    # Your key has started its new trials for the UTC day (rate_limits.trial_starts_per_day), so
+    # this athlete's trial starts on a later day and these numbers are ranges.
+    trial_start_deferred: bool
+    # The athlete's trial already covers its allowance of distinct profiles
+    # (rate_limits.trial_profiles_per_athlete), so this new one is answered in ranges. Earlier
+    # profiles stay exact.
+    trial_profile_limit_reached: bool
+    # The athlete's trial has given all its exact answers (rate_limits.trial_answers), so these
+    # numbers are ranges until the athlete subscribes.
+    trial_answers_used_up: bool
+    # With trial_start_deferred, trial_profile_limit_reached or trial_answers_used_up, why these
+    # numbers are ranges, in words you can show the athlete.
+    trial_note: str
+    # Test environment only: the athlete's simulated subscription has given its allowance of exact
+    # answers or distinct profiles, so these numbers are ranges.
+    simulated_limit_reached: bool
+    simulation_note: str  # With simulated_limit_reached, which allowance was reached.
 
 
 class _CalculationRequired(TypedDict):
@@ -392,10 +425,14 @@ class ActivityListResponse(TypedDict):
     request_id: str
 
 
-class BatchError(TypedDict):
+class _BatchErrorRequired(TypedDict):
     index: int
     code: str
     message: str
+
+
+class BatchError(_BatchErrorRequired, total=False):
+    athlete_id: str  # For athlete_exists: the athlete that holds the item's external_id.
 
 
 class _BatchSummaryRequired(TypedDict):
@@ -830,7 +867,7 @@ class ProductFitDetail(TypedDict):
 
 class _PlanBasisRequired(TypedDict):
     source: PlanBasisSource
-    message: str  # Names what is missing and where each goes. Show it with the plan.
+    message: str  # Names what is missing and where each goes, or which allowance was reached. Show it with the plan.
     carb_range_g_per_hr: str
     sodium_range_mg_per_hr: str
     fluid_range_ml_per_hr: str
@@ -838,7 +875,8 @@ class _PlanBasisRequired(TypedDict):
 
 class PlanBasis(_PlanBasisRequired, total=False):
     """Present when a plan uses the middle of the per-hour ranges for the session because the
-    athlete's profile or the session is missing inputs. With every input in, it is absent."""
+    athlete's profile or the session is missing inputs, or a trial or simulated subscription is past
+    its allowance (``source``). With every input in and the athlete's access open, it is absent."""
 
     # The athlete's profile answers the plan lacks, by the names precision.missing_fields uses.
     missing_profile_fields: List[str]
@@ -883,6 +921,10 @@ class ProductFitResponse(_ProductAnswerRequired, total=False):
     categories: List[ProductCategory]
     cta: SubscriptionCTA
     request_id: str
+    # Teaser tier only: your key has started its new trials for the UTC day, so this athlete's
+    # trial starts on a later day. trial_note says why, in words you can show the athlete.
+    trial_start_deferred: bool
+    trial_note: str
 
 
 ProductChoice = Literal["product_a", "product_b"]
@@ -921,6 +963,8 @@ class ProductCompareResponse(_ProductAnswerRequired, total=False):
     categories: List[ProductCategory]
     cta: SubscriptionCTA
     request_id: str
+    trial_start_deferred: bool  # Teaser tier only, as on product fit.
+    trial_note: str
 
 
 class PrepProduct(TypedDict):
@@ -1077,6 +1121,43 @@ class OnboardingQuestionsResponse(TypedDict):
     request_id: str
 
 
+class _DiscoveryKeyInfoRequired(TypedDict):
+    how: str
+    page: str  # https://saturday.fit/api
+    athletes_per_key: int
+    more_athletes: str  # How to ask for more athletes.
+    contact: str  # api@saturday.fit
+
+
+class DiscoveryKeyInfo(_DiscoveryKeyInfoRequired, total=False):
+    """How a key is had, in plain text values: a key comes with any paid Saturday plan and is made
+    by the signed-in account at saturday.fit/api; it covers athletes_per_key athletes until
+    Saturday raises it."""
+
+    # The account routes that page calls. They take a signed-in Saturday account, not an API key,
+    # so the SDK does not call them.
+    account_routes: str
+    trial: str
+    limits: str
+    platforms: str
+    docs: str
+    quickstart: str
+    llms_txt: str
+    who_is_this: str
+
+
+class DiscoveryResponse(TypedDict):
+    """``GET /v1/``: the routes and features this key can see, and how a key is had."""
+
+    name: str
+    version: str
+    # Resource names to paths. A feature short of general availability carries its stage in its
+    # name ("nutrition (alpha)"); a hidden feature is absent.
+    links: Dict[str, str]
+    get_a_key: DiscoveryKeyInfo
+    request_id: str
+
+
 class ErrorCatalogEntry(TypedDict):
     code: str
     type: str
@@ -1107,6 +1188,16 @@ class PartnerRateLimits(TypedDict):
     requests_per_minute: int
     requests_per_day: Optional[int]  # All calls a day; None when no daily ceiling applies.
     ip_requests_per_day: Optional[int]  # Calculation calls a day; None when none applies.
+    # New athlete trials this key may start per UTC day; an athlete past it gets ranges with
+    # trial_start_deferred. None when the key has no such bound.
+    trial_starts_per_day: Optional[int]
+    # Distinct profiles one trial athlete's exact numbers cover over the trial; a further one gets
+    # ranges with trial_profile_limit_reached. None when the key has no such bound.
+    trial_profiles_per_athlete: Optional[int]
+    trial_days: int  # Days an athlete's trial lasts from its first exact answer.
+    # Exact answers one athlete's trial gives in all, however the days fall; the next answer gets
+    # ranges with trial_answers_used_up. None when the key has no such bound.
+    trial_answers: Optional[int]
 
 
 class PartnerAccount(TypedDict):
@@ -1114,6 +1205,7 @@ class PartnerAccount(TypedDict):
     name: str
     contact_email: str
     status: Literal["active", "suspended"]
+    # partner for a platform partner, individual for a key that comes with a Saturday account's paid plan.
     plan: Literal["partner", "individual"]
     rate_limits: PartnerRateLimits
     created_at: int  # Unix seconds.
@@ -1397,8 +1489,16 @@ class AthleteDataExport(_AthleteDataExportRequired, total=False):
 # --- Integrations and the test project ---
 
 
+IntegrationProvider = Literal["intervals_icu", "strava", "training_peaks"]
+"""The providers ``integrations.status`` and ``integrations.disconnect`` take."""
+
+SyncProvider = Literal["intervals_icu"]
+"""The provider ``integrations.sync`` takes. Strava and TrainingPeaks tokens are refused with a
+``ValidationError`` (``invalid_provider``)."""
+
+
 class _IntegrationStatusDetailRequired(TypedDict):
-    provider: str
+    provider: IntegrationProvider
     connected: bool
     sync_count: int
 
@@ -1413,17 +1513,32 @@ class IntegrationStatusResponse(TypedDict):
     request_id: str
 
 
-class _IntegrationSyncRequired(TypedDict):
-    provider: str
-    status: Literal["completed", "partial", "failed", "not_configured"]
+class _IntegrationSyncResultRequired(TypedDict):
+    provider: SyncProvider
+    # partial when some activities could not be stored, failed when none could or intervals.icu
+    # refused the token; errors says why.
+    status: Literal["completed", "partial", "failed"]
     activities_found: int
     activities_synced: int
-    activities_skipped: int
+    activities_skipped: int  # Found but not stored: the activity's type names no sport the API supports.
 
 
-class IntegrationSyncResponse(_IntegrationSyncRequired, total=False):
+class IntegrationSyncResult(_IntegrationSyncResultRequired, total=False):
+    # Whether the athlete's prescriptions for these activities are exact (full) or ranges (teaser).
     prescription_tier: Literal["full", "teaser"]
     errors: List[str]
+
+
+class IntegrationSyncResponse(TypedDict):
+    result: IntegrationSyncResult
+    request_id: str
+
+
+class IntegrationDisconnectResponse(TypedDict):
+    """The connection you supplied is ended."""
+
+    message: str  # For example "Successfully disconnected intervals_icu".
+    provider: IntegrationProvider
     request_id: str
 
 
