@@ -1,7 +1,9 @@
+import json
+
 import httpx
 import pytest
 
-from saturday import NotFoundError, PermissionDeniedError, RateLimitError, Saturday, ValidationError
+from saturday import ConflictError, NotFoundError, PermissionDeniedError, RateLimitError, Saturday, ValidationError
 
 
 @pytest.fixture
@@ -183,6 +185,7 @@ def _too_many(code, headers=None):
 @pytest.mark.parametrize("code", [
     "daily_call_limit_reached", "intelligence_daily_limit_reached",
     "athlete_free_daily_limit_reached", "distinct_lookup_daily_limit_reached",
+    "simulated_subscriber_daily_limit_reached",
 ])
 def test_daily_codes_are_never_retried_and_carry_the_reset(make_client, monkeypatch, code):
     from datetime import datetime, timezone
@@ -261,3 +264,40 @@ def test_other_validation_errors_carry_no_suggestion(make_client):
     with pytest.raises(ValidationError) as raised:
         client.nutrition.calculate(activity_type="brick", legs=[])
     assert raised.value.suggestion is None
+
+
+def test_taken_external_id_raises_conflict_naming_the_athlete(make_client):
+    calls = []
+    client = make_client(lambda r: calls.append(r) or httpx.Response(409, json={"error": {
+        "type": "invalid_request", "code": "athlete_exists", "athlete_id": "ath_1", "request_id": "req_1",
+        "message": 'An athlete with external_id "user-42" already exists: ath_1. Nothing was created.',
+    }}))
+    with pytest.raises(ConflictError) as raised:
+        client.athletes.create(external_id="user-42")
+    assert (raised.value.status, raised.value.code, raised.value.athlete_id) == (409, "athlete_exists", "ath_1")
+    assert len(calls) == 1
+
+
+def test_sync_posts_to_the_intervals_icu_route_with_sync_types(make_client):
+    seen = []
+    body = {"result": {"provider": "intervals_icu", "status": "completed", "activities_found": 1,
+                       "activities_synced": 1, "activities_skipped": 0}, "request_id": "req_1"}
+    client = make_client(lambda r: seen.append(r) or httpx.Response(200, json=body))
+    synced = client.integrations.sync("intervals_icu", athlete_id="ath_1", access_token="tok",
+                                      date_range={"start": "2026-11-01", "end": "2026-11-07"})
+    assert synced["result"]["activities_synced"] == 1
+    assert seen[0].url.path == "/v1/integrations/intervals_icu/sync"
+    assert json.loads(seen[0].content) == {"athlete_id": "ath_1", "access_token": "tok", "sync_types": ["activities"],
+                                           "date_range": {"start": "2026-11-01", "end": "2026-11-07"}}
+
+
+def test_erase_incomplete_is_raised_not_retried(make_client):
+    calls = []
+    client = make_client(lambda r: calls.append(r) or httpx.Response(503, json={"error": {
+        "type": "api_error", "code": "provider_erasure_incomplete",
+        "message": "A provider connection you supplied for this athlete could not be revoked yet, so nothing was deleted. Retry the request.",
+    }}))
+    with pytest.raises(Exception) as raised:
+        client.athletes.erase("ath_1")
+    assert (raised.value.status, raised.value.code) == (503, "provider_erasure_incomplete")
+    assert len(calls) == 1

@@ -40,10 +40,12 @@ from saturday.types import (
     ConsentRecord,
     CreatedApiKey,
     DailyUsageResponse,
+    DiscoveryResponse,
     ErrorCatalogResponse,
     FuelingProfile,
     HealthResponse,
     ImportActivityRequest,
+    IntegrationDisconnectResponse,
     IntegrationStatusResponse,
     IntegrationSyncResponse,
     LicenseListResponse,
@@ -268,6 +270,10 @@ class _NutritionResource:
         ``meal_before_min`` and ``is_race`` too: one left out computes at its everyday value and
         the plan is the middle of the athlete's ranges, with ``plan_basis`` naming it. A session
         error names its field in ``ValidationError.param``.
+
+        For an athlete on the trial, each call spends one of the athlete's trial calls, as
+        ``calculate`` does; past today's calls the plan is from ranges, with
+        ``plan_basis["source"]`` ``trial_allowance``.
         """
         return self._client.request("POST", "/v1/nutrition/products/fit", json=request)
 
@@ -275,7 +281,7 @@ class _NutritionResource:
         """Size two products (``product_a``, ``product_b``: each ``{"product_id"}`` or ``{"product_query"}``) and name the better fit.
 
         The session fields are ``product_fit``'s; a brick or triathlon with ``legs`` is compared
-        for each leg under ``legs`` too.
+        for each leg under ``legs`` too. Spends one trial call, as ``product_fit`` does.
         """
         return self._client.request("POST", "/v1/nutrition/products/compare", json=request)
 
@@ -289,7 +295,12 @@ class _AthletesResource:
         self._client = client
 
     def create(self, **athlete: Any) -> Athlete:
-        """Create an athlete. At least one of ``name``, ``email`` or ``external_id`` is required."""
+        """Create an athlete. At least one of ``name``, ``email`` or ``external_id`` is required.
+
+        ``external_id`` is unique within your partner account: one another of your athletes holds
+        creates nothing and raises ``ConflictError`` (``athlete_exists``) whose ``athlete_id`` names
+        that athlete, so a retried create is safe.
+        """
         return self._client.request("POST", "/v1/athletes", json=athlete)
 
     def get(self, athlete_id: str) -> Athlete:
@@ -306,20 +317,21 @@ class _AthletesResource:
         """One page of athletes. Pass ``pagination["next_cursor"]`` back as ``cursor``.
 
         ``external_id`` returns only the athletes you created with that id, newest first, in one
-        page. The API does not deduplicate ``external_id``, so look an athlete up this way before
-        creating one when a create may have been interrupted.
+        page. Athletes created before ``external_id`` became unique may share one.
         """
         return self._client.request("GET", "/v1/athletes", params=_params(
             limit=limit, cursor=cursor, external_id=external_id, profile_complete=profile_complete,
         ))
 
     def update(self, athlete_id: str, **updates: Any) -> Athlete:
-        """Update the fields you send. Settings sent here replace the stored settings."""
+        """Update the fields you send. Settings sent here replace the stored settings. An
+        ``external_id`` another of your athletes holds changes nothing and raises ``ConflictError``
+        (``athlete_exists``)."""
         return self._client.request("PATCH", f"/v1/athletes/{_seg(athlete_id)}", json=updates)
 
     def delete(self, athlete_id: str) -> None:
-        """Delete the athlete and everything stored under them in your account. For a data-subject
-        erasure request use ``erase``."""
+        """Delete the athlete and everything stored under them in your account. For a
+        right-to-erasure request use ``erase``."""
         self._client.request("DELETE", f"/v1/athletes/{_seg(athlete_id)}")
 
     def get_settings(self, athlete_id: str) -> AthleteSettings:
@@ -335,7 +347,9 @@ class _AthletesResource:
         return self._client.request("GET", f"/v1/athletes/{_seg(athlete_id)}/fueling-profile")
 
     def batch_create(self, athletes: List[Dict[str, Any]]) -> BatchAthleteResponse:
-        """Create up to 100 athletes in one call."""
+        """Create up to 100 athletes in one call. An item whose ``external_id`` one of your athletes
+        holds, an earlier item of the same batch included, fails with ``athlete_exists`` and that
+        athlete's id in ``errors[i]["athlete_id"]``."""
         return self._client.request("POST", "/v1/athletes/batch", json={"athletes": athletes})
 
     def export(self, athlete_id: str) -> AthleteDataExport:
@@ -343,9 +357,16 @@ class _AthletesResource:
         return self._client.request("POST", f"/v1/athletes/{_seg(athlete_id)}/export")
 
     def erase(self, athlete_id: str) -> None:
-        """Erase the athlete for a right-to-erasure request: everything ``delete`` removes, plus
-        ending the athlete's connected-provider grants and erasing the data those providers sent,
-        with an audit record of the deletion."""
+        """Erase everything Saturday holds for you about the athlete, for a right-to-erasure request.
+
+        Each provider connection you supplied for the athlete with ``integrations.sync`` is revoked
+        at the provider first; then the athlete and everything stored under them are deleted
+        (activities, those synced through your connections included, prescriptions, feedback,
+        consent records, usage logs) with the athlete's link to a Saturday account. A linked
+        athlete's own Saturday account is not changed. A ``SaturdayError`` with status 503 and code
+        ``provider_erasure_incomplete`` means a connection could not be revoked yet and nothing was
+        deleted: call ``erase`` again.
+        """
         self._client.request("POST", f"/v1/athletes/{_seg(athlete_id)}/delete")
 
     def list_consent(self, athlete_id: str) -> ConsentListResponse:
@@ -387,7 +408,13 @@ class _ActivitiesResource:
         ``duration_min`` to their total. Changing ``type`` to brick or triathlon needs ``legs`` in
         the same call unless the activity holds legs already; changing it to a single sport removes
         the legs. A brick or triathlon refuses ``intensity_level``, ``thermal_stress_level`` and a
-        ``duration_min`` other than its legs' total: change its legs instead."""
+        ``duration_min`` other than its legs' total: change its legs instead.
+
+        A change to ``type``, ``legs``, ``duration_min``, ``intensity_level``,
+        ``thermal_stress_level``, ``is_race_event`` or ``meal_before_min`` removes the stored
+        prescription: ``get_prescription`` raises ``NotFoundError`` (``prescription_not_found``) until
+        you calculate the activity again. A field sent at its stored value changes nothing, and
+        ``external_id`` alone keeps the prescription."""
         return self._client.request("PATCH", f"/v1/athletes/{_seg(athlete_id)}/activities/{_seg(activity_id)}", json=updates)
 
     def delete(self, athlete_id: str, activity_id: str) -> None:
@@ -398,7 +425,9 @@ class _ActivitiesResource:
         return self._client.request("POST", f"/v1/athletes/{_seg(athlete_id)}/activities/{_seg(activity_id)}/calculate")
 
     def get_prescription(self, athlete_id: str, activity_id: str) -> StoredPrescriptionResponse:
-        """The stored prescription. ``NotFoundError`` until the activity has been calculated."""
+        """The prescription calculated for the activity's session as it stands. ``NotFoundError``
+        (``prescription_not_found``) until the activity has been calculated, and again after an
+        ``update`` that changes the session, until it is calculated again."""
         return self._client.request("GET", f"/v1/athletes/{_seg(athlete_id)}/activities/{_seg(activity_id)}/prescription")
 
     def prep(
@@ -418,8 +447,8 @@ class _ActivitiesResource:
         A brick or triathlon with exact numbers is prepped leg by leg under ``legs``: ``products``
         is sized against each leg, its ``servings`` counting per leg, or send ``legs``, one
         ``{"products": [...]}`` per leg of the activity in order, for a list per leg. Send one or
-        the other. ``legs`` on a single session, or with another count, raises ``ValidationError``
-        with ``param`` ``legs``.
+        the other: both raise ``ValidationError`` (``invalid_value`` on ``products``). ``legs`` on a
+        single session, or with another count, raises ``ValidationError`` with ``param`` ``legs``.
         """
         body: Dict[str, Any] = {"legs": legs} if legs is not None else {}
         if products is not None or legs is None:
@@ -491,7 +520,7 @@ class _PartnerResource:
         self._client = client
 
     def get(self) -> PartnerAccount:
-        """Your account and its limits."""
+        """Your account and its limits, the trial's length and bounds included (``rate_limits``)."""
         return self._client.request("GET", "/v1/partner")
 
     def usage(self, *, from_date: Optional[str] = None, to_date: Optional[str] = None) -> UsageResponse:
@@ -632,20 +661,38 @@ class _IntegrationsResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def sync(self, provider: str, *, athlete_id: str, access_token: str, **options: Any) -> IntegrationSyncResponse:
-        """Pull the athlete's activities from the provider (``strava``) into Saturday.
+    def sync(
+        self,
+        provider: str,
+        *,
+        athlete_id: str,
+        access_token: str,
+        date_range: Optional[Dict[str, str]] = None,
+        sync_types: Optional[List[str]] = None,
+    ) -> IntegrationSyncResponse:
+        """Fetch the activities of the intervals.icu user an access token belongs to and store each
+        as an activity of your athlete.
 
-        Options: ``refresh_token``, ``sync_types``, ``date_range`` (``{"from", "to"}``).
+        ``provider`` is ``"intervals_icu"``, the only one: Strava and TrainingPeaks tokens raise
+        ``ValidationError`` (``invalid_provider``). Send an OAuth access token your intervals.icu app
+        obtained from that user; the calls count against your app's intervals.icu limit.
+        ``date_range`` is ``{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}``, both or neither; without
+        it, the last 7 days. ``sync_types`` defaults to ``["activities"]``. The result is under
+        ``result``.
         """
-        return self._client.request(
-            "POST", f"/v1/integrations/{_seg(provider)}/sync",
-            json={"athlete_id": athlete_id, "access_token": access_token, **options},
-        )
+        body: Dict[str, Any] = {"athlete_id": athlete_id, "access_token": access_token, "sync_types": sync_types or ["activities"]}
+        if date_range is not None:
+            body["date_range"] = date_range
+        return self._client.request("POST", f"/v1/integrations/{_seg(provider)}/sync", json=body)
 
     def status(self, provider: str, athlete_id: str) -> IntegrationStatusResponse:
+        """``provider``: ``intervals_icu``, ``strava`` or ``training_peaks``."""
         return self._client.request("GET", f"/v1/integrations/{_seg(provider)}/status", params={"athlete_id": athlete_id})
 
-    def disconnect(self, provider: str, athlete_id: str) -> Dict[str, Any]:
+    def disconnect(self, provider: str, athlete_id: str) -> IntegrationDisconnectResponse:
+        """End the connection you supplied for the athlete with ``sync``: it is revoked at the
+        provider and its tokens are removed. Activities already synced stay. A linked athlete's own
+        connection to the provider in their Saturday account is not changed."""
         return self._client.request("POST", f"/v1/integrations/{_seg(provider)}/disconnect", json={"athlete_id": athlete_id})
 
 
@@ -656,7 +703,14 @@ class _TestingResource:
         self._client = client
 
     def simulate_subscription(self, athlete_id: str, *, active: bool = True) -> SimulateSubscriptionResponse:
-        """Give the athlete a simulated Saturday subscription (``active=True``) or take it away."""
+        """Give the athlete a simulated Saturday subscription (``active=True``) or take it away.
+
+        A key marks at most 10 athletes a UTC day (marking one already marked today again is free);
+        past that it raises ``RateLimitError`` with code ``simulated_subscriber_daily_limit_reached``
+        and ``resets_at``. Each simulated subscriber gets up to 100 exact answers over 3 distinct
+        profiles; past either, answers are ranges with ``simulated_limit_reached``. These are the
+        API's defaults.
+        """
         return self._client.request(
             "POST", f"/v1/test/athletes/{_seg(athlete_id)}/simulate-subscription", json={"active": active}
         )
@@ -666,8 +720,8 @@ class _MetaResource:
     def __init__(self, client: Saturday):
         self._client = client
 
-    def discovery(self) -> Dict[str, Any]:
-        """The routes and features this key can see."""
+    def discovery(self) -> DiscoveryResponse:
+        """The routes and features this key can see, and how a key is had (``get_a_key``)."""
         return self._client.request("GET", "/v1/")
 
     def errors(self) -> ErrorCatalogResponse:
