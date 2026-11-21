@@ -1,10 +1,11 @@
-"""The SDK neither calls nor names routes no partner key reaches."""
+"""The SDK neither calls nor names routes no partner key reaches: closed to partners, retired (the
+key purchase) or called with a signed-in Saturday account rather than a key (saturday.fit/api)."""
 
 from pathlib import Path
 
 from saturday import Saturday
 
-HIDDEN_PATHS = ["/v1/products", "/v1/ai/", "/ai/conversations", "/gear"]
+HIDDEN_PATHS = ["/v1/products", "/v1/ai/", "/ai/conversations", "/gear", "/v1/signup", "/v1/account/"]
 
 
 def test_calls_no_route_closed_to_partners():

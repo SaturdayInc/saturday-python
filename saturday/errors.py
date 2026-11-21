@@ -1,6 +1,6 @@
 """
 Typed errors. Every API error carries ``status``, ``code``, ``message``, ``error_type`` and,
-when the API sets them, ``param`` and ``request_id``.
+when the API sets them, ``param``, ``request_id`` and (for ``athlete_exists``) ``athlete_id``.
 """
 
 from __future__ import annotations
@@ -9,12 +9,15 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-# The 429 codes that reset at UTC midnight. Nothing succeeds before then.
+# The 429 codes that reset at UTC midnight. Nothing they refuse succeeds before then.
+# simulated_subscriber_daily_limit_reached is the test environment's: the key has marked its day's
+# allowance of athletes with testing.simulate_subscription.
 DAILY_LIMIT_CODES = (
     "daily_call_limit_reached",
     "intelligence_daily_limit_reached",
     "athlete_free_daily_limit_reached",
     "distinct_lookup_daily_limit_reached",
+    "simulated_subscriber_daily_limit_reached",
 )
 
 # The longest wait the client sleeps through inside one call, in seconds.
@@ -33,6 +36,7 @@ class SaturdayError(Exception):
         param: Optional[str] = None,
         request_id: Optional[str] = None,
         retry_after: Optional[float] = None,
+        athlete_id: Optional[str] = None,
     ):
         super().__init__(message)
         self.message = message
@@ -41,6 +45,8 @@ class SaturdayError(Exception):
         self.code = code
         self.param = param
         self.request_id = request_id
+        # For athlete_exists (409): the athlete that holds the external_id you sent.
+        self.athlete_id = athlete_id
         # Seconds to wait, from the Retry-After header, when the response carried one (429s and 503s).
         self.retry_after = retry_after
 
@@ -55,6 +61,7 @@ class SaturdayError(Exception):
             "code": detail.get("code", "unknown"),
             "param": detail.get("param"),
             "request_id": detail.get("request_id"),
+            "athlete_id": detail.get("athlete_id"),
         }
         seconds: Optional[float] = None
         if retry_after is not None:
@@ -72,6 +79,8 @@ class SaturdayError(Exception):
             return PermissionDeniedError(**kwargs)
         if status == 404:
             return NotFoundError(**kwargs)
+        if status == 409:
+            return ConflictError(**kwargs)
         if status == 429:
             return RateLimitError(**kwargs, retry_after=seconds)
         return cls(**kwargs, retry_after=seconds)
@@ -82,7 +91,11 @@ class AuthenticationError(SaturdayError):
 
 
 class PermissionDeniedError(SaturdayError):
-    """403: the key cannot use this feature or resource (for example ``feature_alpha``)."""
+    """403: the key cannot use this feature or resource. Read ``code``: ``feature_alpha`` (a feature
+    not yet open to your key), ``plan_inactive`` (the paid Saturday plan this key comes with has
+    ended; the key works again, with its athletes, once the plan is active),
+    ``resource_limit_exceeded`` (the key's athletes are at their limit; write to api@saturday.fit
+    to raise it)."""
 
 
 class RateLimitError(SaturdayError):
@@ -93,8 +106,9 @@ class RateLimitError(SaturdayError):
       The client retries a wait of 30 seconds or less; a longer one is raised to you.
     - ``rate_limited``: an unusual request pattern; calculations are blocked for ``retry_after`` seconds.
     - ``daily_call_limit_reached``, ``intelligence_daily_limit_reached``,
-      ``athlete_free_daily_limit_reached``, ``distinct_lookup_daily_limit_reached``: a daily
-      ceiling. ``daily_limit`` is True and ``resets_at`` is the UTC midnight it resets at. Never retried.
+      ``athlete_free_daily_limit_reached``, ``distinct_lookup_daily_limit_reached``, and on the
+      test environment ``simulated_subscriber_daily_limit_reached``: a daily ceiling.
+      ``daily_limit`` is True and ``resets_at`` is the UTC midnight it resets at. Never retried.
     """
 
     def __init__(self, *args: Any, retry_after: Optional[float] = None, now: Optional[datetime] = None, **kwargs: Any):
@@ -137,3 +151,9 @@ def _suggested_field(message: str) -> Optional[str]:
 
 class NotFoundError(SaturdayError):
     """404: no such resource for this key, or a route this key cannot see."""
+
+
+class ConflictError(SaturdayError):
+    """409: the request conflicts with a record you hold. For ``athlete_exists``, another of your
+    athletes holds the ``external_id`` you sent: nothing was created or changed, and
+    ``athlete_id`` names that athlete."""
