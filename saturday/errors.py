@@ -87,10 +87,10 @@ class SaturdayError(Exception):
                 seconds = None
             else:
                 try:
-                    seconds = max(0.0, float(stripped))  # type: ignore[arg-type]
+                    seconds = max(0.0, float(stripped))
                 except (ValueError, TypeError):
                     try:
-                        parsed = parsedate_to_datetime(stripped)  # type: ignore[arg-type]
+                        parsed = parsedate_to_datetime(stripped)
                         if parsed is None:
                             seconds = None
                         else:
