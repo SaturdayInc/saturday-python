@@ -139,10 +139,11 @@ class Saturday:
         max_retries: int = DEFAULT_MAX_RETRIES,
         bearer_token: Optional[str] = None,
     ):
-        if not isinstance(api_key, str) or not api_key:
+        if not isinstance(api_key, str) or (not api_key and not bearer_token):
             raise ValueError("api_key must be a non-empty string")
-        if any(ord(c) < 32 or ord(c) == 127 for c in api_key):
-            raise ValueError("api_key must not contain control characters")
+        for name, value in (("api_key", api_key), ("bearer_token", bearer_token or "")):
+            if any(ord(c) < 32 or ord(c) == 127 for c in value):
+                raise ValueError(f"{name} must not contain control characters")
         if timeout is not None:
             if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
                 raise ValueError("timeout must be a finite number above 0")

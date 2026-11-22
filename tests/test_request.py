@@ -547,6 +547,14 @@ def test_constructor_validates_options(kwargs, option):
             Saturday(api_key="sk_test_fake", **kwargs)
 
 
+def test_bearer_token_client_may_leave_api_key_empty():
+    client = Saturday(api_key="", bearer_token="eyJ.test.token")
+    assert client._client.headers["Authorization"] == "Bearer eyJ.test.token"
+    client.close()
+    with pytest.raises(ValueError, match="bearer_token"):
+        Saturday(api_key="", bearer_token="eyJ\r\nX-Evil: 1")
+
+
 def test_computed_backoff_is_capped_at_max_retry_wait(make_client, monkeypatch):
     sleeps = []
     monkeypatch.setattr("saturday.client.time.sleep", sleeps.append)
