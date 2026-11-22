@@ -280,9 +280,16 @@ class _NutritionResource:
         """
         return self._client.request("POST", "/v1/nutrition/calculate", json=request)
 
-    def batch_calculate(self, scenarios: List[Dict[str, Any]]) -> BatchCalculateResponse:
-        """Calculate up to 50 sessions. Each scenario counts as one call against your limits."""
-        return self._client.request("POST", "/v1/nutrition/calculate/batch", json={"scenarios": scenarios})
+    def batch_calculate(self, scenarios: List[Dict[str, Any]], *, estimate_only: bool = False) -> BatchCalculateResponse:
+        """Calculate up to 50 sessions. Each scenario counts as one call against your limits.
+
+        With ``estimate_only=True`` nothing is calculated or counted: the answer carries only
+        ``total`` and ``estimated_ms``, the expected wall time of the real call.
+        """
+        body: Dict[str, Any] = {"scenarios": scenarios}
+        if estimate_only:
+            body["estimate_only"] = True
+        return self._client.request("POST", "/v1/nutrition/calculate/batch", json=body)
 
     def product_fit(self, **request: Any) -> ProductFitResponse:
         """Size one catalog product against the athlete's prescription for a session.
@@ -320,7 +327,7 @@ class _AthletesResource:
         self._client = client
 
     def create(self, **athlete: Any) -> Athlete:
-        """Create an athlete. At least one of ``name``, ``email`` or ``external_id`` is required.
+        """Create an athlete. Every field is optional; the answer carries the athlete's ``id``.
 
         ``external_id`` is unique within your partner account: one another of your athletes holds
         creates nothing and raises ``ConflictError`` (``athlete_exists``) whose ``athlete_id`` names
@@ -380,8 +387,9 @@ class _AthletesResource:
         return self._client.request("POST", f"/v1/athletes/{_seg(athlete_id)}/onboarding-link", json=body)
 
     def batch_create(self, athletes: List[Dict[str, Any]]) -> BatchAthleteResponse:
-        """Create up to 100 athletes in one call. An item whose ``external_id`` one of your athletes
-        holds, an earlier item of the same batch included, fails with ``athlete_exists`` and that
+        """Create up to 100 athletes in one call. Each item needs at least one of ``name``,
+        ``email`` or ``external_id`` (else ``missing_identifier``). An item whose ``external_id`` one of
+        your athletes holds, an earlier item of the same batch included, fails with ``athlete_exists`` and that
         athlete's id in ``errors[i]["athlete_id"]``."""
         return self._client.request("POST", "/v1/athletes/batch", json={"athletes": athletes})
 
@@ -430,7 +438,7 @@ class _ActivitiesResource:
     def get(self, athlete_id: str, activity_id: str) -> Activity:
         return self._client.request("GET", f"/v1/athletes/{_seg(athlete_id)}/activities/{_seg(activity_id)}")
 
-    def list(self, athlete_id: str, *, limit: int = 20, cursor: Optional[str] = None) -> ActivityListResponse:
+    def list(self, athlete_id: str, *, limit: Optional[int] = None, cursor: Optional[str] = None) -> ActivityListResponse:
         """One page of the athlete's activities. Pass ``pagination["next_cursor"]`` back as ``cursor``."""
         return self._client.request(
             "GET", f"/v1/athletes/{_seg(athlete_id)}/activities", params=_params(limit=limit, cursor=cursor)
@@ -621,8 +629,10 @@ class _OrganizationsResource:
         body = {k: v for k, v in {"display_name": display_name, "description": description, "sport": sport}.items() if v is not None}
         return self._client.request("POST", "/v1/organizations", json=body)
 
-    def list(self) -> OrganizationListResponse:
-        return self._client.request("GET", "/v1/organizations")
+    def list(self, *, limit: Optional[int] = None, cursor: Optional[str] = None) -> OrganizationListResponse:
+        """One page of organizations, newest first: ``limit`` 1 to 200 (default 50). Pass
+        ``pagination["next_cursor"]`` back as ``cursor``."""
+        return self._client.request("GET", "/v1/organizations", params=_params(limit=limit, cursor=cursor))
 
     def get(self, org_id: str) -> Organization:
         return self._client.request("GET", f"/v1/organizations/{_seg(org_id)}")
@@ -760,7 +770,7 @@ class _MetaResource:
         return self._client.request("GET", "/v1/")
 
     def errors(self) -> ErrorCatalogResponse:
-        """Every error code the API can return, with its HTTP status and whether a retry can succeed."""
+        """Every error code the API can return, with its HTTP status and whether to retry it automatically (``retryable``)."""
         return self._client.request("GET", "/v1/errors")
 
     def health(self) -> HealthResponse:
@@ -941,8 +951,9 @@ class _CoachResource:
     def register_webhook(self, url: str, *, events: Optional[List[str]] = None) -> Dict[str, Any]:
         """Register a webhook endpoint. The signing secret is returned ONCE — store it.
 
-        ``events`` subscribes to a subset of ``concern.detected`` /
-        ``athlete.needs_attention``; omit (or pass empty) for all coach events.
+        Omit ``events`` (or pass empty) for ``concern.detected`` and ``athlete.needs_attention``;
+        ``["*"]`` subscribes to every coach event, ``coach.message.sent`` and ``athlete.deleted``
+        included.
         """
         return self._client.request(
             "POST", "/v1/coach/webhooks", json={"url": url, "events": events or []}
