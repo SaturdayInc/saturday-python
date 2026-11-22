@@ -279,12 +279,18 @@ class Activity(_ActivityRequired, total=False):
 
 
 class AthleteSettings(TypedDict, total=False):
+    # A write takes 1, 3, 5, 7 or 9 and refuses any other value with 400 invalid_value.
     sweat_level: int
+    # A write takes 1, 5 or 9 and refuses any other value with 400 invalid_value.
     saltiness: int
+    # A write takes 1, 3, 5, 7 or 9 and refuses any other value with 400 invalid_value.
     satiety_level: int
+    # A write takes 1, 3, 5, 7 or 9 and refuses any other value with 400 invalid_value.
     fitness_level: int
     carb_experience: str
     usual_carb_consumption: str
+    # A write takes 50 to 150 g/hr in steps of 10, or 0 to clear it; any other value is refused
+    # with 400 out_of_range.
     carb_upper_limit_override: int
     muscle_cramps: bool
     gut_distress: bool
@@ -1095,6 +1101,11 @@ class SettingsFieldSchema(_SettingsFieldRequired, total=False):
     min: float
     max: float
     options: List[str]
+    # The only values an integer setting takes, when it takes fewer than every whole number from
+    # min to max (sweat_level, satiety_level and fitness_level: 1, 3, 5, 7, 9; saltiness: 1, 5, 9).
+    values: List[int]
+    # The spacing of the values an integer setting takes from min to max (carb_upper_limit_override: 10).
+    step: int
 
 
 class SettingsSchemaResponse(TypedDict):

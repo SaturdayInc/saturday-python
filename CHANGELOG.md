@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+Breaking changes:
+
+- `sweat_level`, `satiety_level` and `fitness_level` take 1, 3, 5, 7 or 9 and `saltiness` 1, 5 or 9, the levels the Saturday app stores, on `nutrition.calculate` and on an athlete's settings; the API refuses any other value with a `ValidationError` of code `invalid_value`. `carb_upper_limit_override` takes 50 to 150 g/hr in steps of 10 (code `out_of_range` otherwise). `SettingsFieldSchema` gains `values` and `step`.
+
 Added:
 
 - `athletes.create_onboarding_link(athlete_id, locale=None)` (`POST /v1/athletes/{athlete_id}/onboarding-link`) returns `OnboardingLink`: a fresh link to the hosted onboarding page (`url`), valid until `expires_at` (Unix seconds, 90 days on). Call it from your refresh address, where an athlete who opens an expired link is sent with `athlete_id` and `locale` in the query, and redirect them to `url`. Production refuses it with `PermissionDeniedError` (`hosted_onboarding_unavailable`) until the page opens there. A 5xx on it is retried.
