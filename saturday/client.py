@@ -747,7 +747,7 @@ class _MetaResource:
         return self._client.request("GET", "/v1/")
 
     def errors(self) -> ErrorCatalogResponse:
-        """Every error code the API can return, with its HTTP status and whether a retry can succeed."""
+        """Every error code the API can return, with its HTTP status and whether to retry it automatically (``retryable``)."""
         return self._client.request("GET", "/v1/errors")
 
     def health(self) -> HealthResponse:

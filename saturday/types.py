@@ -1176,6 +1176,8 @@ class ErrorCatalogEntry(TypedDict):
     type: str
     http_status: int
     message: str
+    # Whether a client may retry the same call automatically after Retry-After. False for the daily
+    # ceilings, which clear only at midnight UTC.
     retryable: bool
     documentation_url: str
 
