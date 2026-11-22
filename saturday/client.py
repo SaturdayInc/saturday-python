@@ -78,7 +78,7 @@ from saturday.types import (
     WebhookTestResponse,
 )
 
-SDK_VERSION = "0.8.0"
+SDK_VERSION = "0.9.0"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 3
