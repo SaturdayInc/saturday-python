@@ -8,10 +8,11 @@ Every method returns the API's JSON as plain dictionaries, typed with the TypedD
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from typing import Any, Dict, List, Optional, Sequence, Union
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -96,7 +97,10 @@ def _retry_safe_on_server_error(method: str, path: str) -> bool:
 
 def _seg(value: str) -> str:
     """Encode one path segment."""
-    return quote(str(value), safe="")
+    text = str(value)
+    if text in (".", ".."):
+        raise ValueError(f"Invalid path segment: {text!r}")
+    return quote(text, safe="")
 
 
 def _params(**values: Any) -> Optional[Dict[str, Any]]:
@@ -135,6 +139,18 @@ class Saturday:
         max_retries: int = DEFAULT_MAX_RETRIES,
         bearer_token: Optional[str] = None,
     ):
+        if not isinstance(api_key, str) or (not api_key and not bearer_token):
+            raise ValueError("api_key must be a non-empty string")
+        for name, value in (("api_key", api_key), ("bearer_token", bearer_token or "")):
+            if any(ord(c) < 32 or ord(c) == 127 for c in value):
+                raise ValueError(f"{name} must not contain control characters")
+        if timeout is not None:
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                raise ValueError("timeout must be a finite number above 0")
+            if not math.isfinite(float(timeout)) or float(timeout) <= 0:
+                raise ValueError("timeout must be a finite number above 0")
+        if isinstance(max_retries, bool) or not isinstance(max_retries, int) or max_retries < 0:
+            raise ValueError("max_retries must be an integer of 0 or more")
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._timeout = DEFAULT_TIMEOUT if timeout is None else timeout
@@ -192,6 +208,10 @@ class Saturday:
         since the server may have done the write. Daily ceilings, blocks, waits over 30 seconds and
         every other 4xx raise at once.
         """
+        method = method.upper()
+        parsed_path = urlparse(path)
+        if parsed_path.scheme or parsed_path.netloc:
+            raise ValueError("path must be a relative URL path, not an absolute URL")
         last_error: Optional[SaturdayError] = None
 
         for attempt in range(self._max_retries + 1):
@@ -210,7 +230,8 @@ class Saturday:
             try:
                 error_body = response.json()
             except Exception:
-                error_body = {"error": {"type": "api_error", "code": "unknown", "message": response.text or f"HTTP {response.status_code}"}}
+                fallback_message = (response.text or f"HTTP {response.status_code}")[:200]
+                error_body = {"error": {"type": "api_error", "code": "unknown", "message": fallback_message}}
             error = SaturdayError.from_response(response.status_code, error_body, response.headers.get("Retry-After"))
             last_error = error
 
@@ -221,7 +242,7 @@ class Saturday:
             elif response.status_code >= 500 and _retry_safe_on_server_error(method, path):
                 if error.retry_after is not None and error.retry_after > MAX_RETRY_WAIT_SECONDS:
                     raise error
-                delay = error.retry_after if error.retry_after is not None else 2 ** attempt
+                delay = error.retry_after if error.retry_after is not None else min(2 ** attempt, MAX_RETRY_WAIT_SECONDS)
             else:
                 raise error
             if attempt < self._max_retries:
@@ -808,7 +829,7 @@ class _CoachResource:
         """One athlete's in-window fueling rollup + concern summary (roster-confined)."""
         return self._client.request(
             "GET",
-            f"/v1/coach/athletes/{athlete_uid}/fueling-rollup",
+            f"/v1/coach/athletes/{_seg(athlete_uid)}/fueling-rollup",
             params=_coach_read_params(window, focus),
         )
 
@@ -825,7 +846,7 @@ class _CoachResource:
         if refresh:
             params["refresh"] = "true"
         return self._client.request(
-            "GET", f"/v1/coach/athletes/{athlete_uid}/report", params=params or None
+            "GET", f"/v1/coach/athletes/{_seg(athlete_uid)}/report", params=params or None
         )
 
     def report_pdf(
@@ -835,13 +856,13 @@ class _CoachResource:
         params = _coach_read_params(window, focus) or {}
         params["format"] = "pdf"
         return self._client.request(
-            "GET", f"/v1/coach/athletes/{athlete_uid}/report", params=params, raw=True
+            "GET", f"/v1/coach/athletes/{_seg(athlete_uid)}/report", params=params, raw=True
         )
 
     def session_detail(self, athlete_uid: str, activity_id: str) -> Dict[str, Any]:
         """Drill into one session by activity id (planned-vs-actual + markers)."""
         return self._client.request(
-            "GET", f"/v1/coach/athletes/{athlete_uid}/sessions/{activity_id}"
+            "GET", f"/v1/coach/athletes/{_seg(athlete_uid)}/sessions/{_seg(activity_id)}"
         )
 
     # --- Config: alert rules ---
@@ -929,15 +950,15 @@ class _CoachResource:
 
     def delete_webhook(self, webhook_id: str) -> Dict[str, Any]:
         """Delete a webhook endpoint by id."""
-        return self._client.request("DELETE", f"/v1/coach/webhooks/{webhook_id}")
+        return self._client.request("DELETE", f"/v1/coach/webhooks/{_seg(webhook_id)}")
 
     def disable_webhook(self, webhook_id: str) -> Dict[str, Any]:
         """Disable a webhook endpoint (stops delivery without deleting it)."""
-        return self._client.request("POST", f"/v1/coach/webhooks/{webhook_id}/disable")
+        return self._client.request("POST", f"/v1/coach/webhooks/{_seg(webhook_id)}/disable")
 
     def enable_webhook(self, webhook_id: str) -> Dict[str, Any]:
         """Re-enable a previously disabled webhook endpoint."""
-        return self._client.request("POST", f"/v1/coach/webhooks/{webhook_id}/enable")
+        return self._client.request("POST", f"/v1/coach/webhooks/{_seg(webhook_id)}/enable")
 
     # --- Billing (read-only; the key must carry billing:read) ---
 

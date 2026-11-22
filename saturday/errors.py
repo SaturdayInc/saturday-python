@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, Optional
 
 # The 429 codes that reset at UTC midnight. Nothing they refuse succeeds before then.
@@ -51,26 +52,55 @@ class SaturdayError(Exception):
         self.retry_after = retry_after
 
     @classmethod
-    def from_response(cls, status: int, error_body: Dict[str, Any], retry_after: Optional[str] = None) -> "SaturdayError":
+    def from_response(cls, status: int, error_body: Any, retry_after: Optional[str] = None) -> "SaturdayError":
         """The error subclass for an API error response."""
-        detail = error_body.get("error", error_body) if isinstance(error_body, dict) else {}
+        if isinstance(error_body, dict):
+            raw_detail = error_body.get("error", error_body)
+            detail = raw_detail if isinstance(raw_detail, dict) else {}
+        else:
+            detail = {}
+        message = detail.get("message")
+        if not isinstance(message, str) or not message:
+            message = f"HTTP {status}"
+        error_type = detail.get("type")
+        if not isinstance(error_type, str) or not error_type:
+            error_type = "api_error"
+        code = detail.get("code")
+        if not isinstance(code, str) or not code:
+            code = "unknown"
+        param = detail.get("param") if isinstance(detail.get("param"), str) else None
+        request_id = detail.get("request_id") if isinstance(detail.get("request_id"), str) else None
+        athlete_id = detail.get("athlete_id") if isinstance(detail.get("athlete_id"), str) else None
         kwargs: Dict[str, Any] = {
-            "message": detail.get("message", f"HTTP {status}"),
+            "message": message,
             "status": status,
-            "error_type": detail.get("type", "api_error"),
-            "code": detail.get("code", "unknown"),
-            "param": detail.get("param"),
-            "request_id": detail.get("request_id"),
-            "athlete_id": detail.get("athlete_id"),
+            "error_type": error_type,
+            "code": code,
+            "param": param,
+            "request_id": request_id,
+            "athlete_id": athlete_id,
         }
         seconds: Optional[float] = None
         if retry_after is not None:
-            try:
-                seconds = max(0.0, float(retry_after))
-            except ValueError:
+            stripped = retry_after.strip() if isinstance(retry_after, str) else retry_after
+            if stripped is None or stripped == "":
                 seconds = None
-            if seconds is not None and seconds.is_integer():
-                seconds = int(seconds)
+            else:
+                try:
+                    seconds = max(0.0, float(stripped))  # type: ignore[arg-type]
+                except (ValueError, TypeError):
+                    try:
+                        parsed = parsedate_to_datetime(stripped)  # type: ignore[arg-type]
+                        if parsed is None:
+                            seconds = None
+                        else:
+                            if parsed.tzinfo is None:
+                                parsed = parsed.replace(tzinfo=timezone.utc)
+                            seconds = max(0.0, (parsed - datetime.now(timezone.utc)).total_seconds())
+                    except Exception:
+                        seconds = None
+                if seconds is not None and float(seconds).is_integer():
+                    seconds = int(seconds)
         if status in (400, 422):
             return ValidationError(**kwargs)
         if status == 401:
