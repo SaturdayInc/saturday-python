@@ -158,3 +158,43 @@ def test_precision_complete_profile_exact():
     assert rx["precision"]["profile_complete"] is True
     assert "missing_fields" not in rx["precision"]
     assert rx["carb_g_per_hr"] == 70
+
+
+
+def test_create_onboarding_link_posts_locale():
+    """create_onboarding_link() POSTs the locale to /v1/athletes/{id}/onboarding-link."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.raw_path.decode()
+        seen["body"] = request.content
+        return httpx.Response(
+            200,
+            json={
+                "object": "onboarding_link",
+                "athlete_id": "ath_1",
+                "url": "https://saturday.fit/onboard?ot=abc&test=1&locale=de",
+                "expires_at": 1771200000,
+            },
+        )
+
+    client = _client_with(handler)
+    res = client.athletes.create_onboarding_link("ath 1", locale="de")
+
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/v1/athletes/ath%201/onboarding-link"
+    assert seen["body"] == b'{"locale":"de"}' or seen["body"] == b'{"locale": "de"}'
+    assert res["expires_at"] == 1771200000
+    assert "locale=de" in res["url"]
+
+
+def test_create_onboarding_link_without_locale_sends_empty_body():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.content
+        return httpx.Response(200, json={"object": "onboarding_link", "athlete_id": "ath_1", "url": "u", "expires_at": 1})
+
+    _client_with(handler).athletes.create_onboarding_link("ath_1")
+    assert seen["body"] in (b"{}", b"{ }")
