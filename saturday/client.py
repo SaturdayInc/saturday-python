@@ -50,6 +50,8 @@ from saturday.types import (
     IntegrationSyncResponse,
     LicenseListResponse,
     NutritionCalculateResponse,
+    OnboardingLink,
+    OnboardingLocale,
     OnboardingQuestionsResponse,
     Organization,
     OrganizationListResponse,
@@ -79,13 +81,13 @@ SDK_VERSION = "0.8.0"
 DEFAULT_BASE_URL = "https://api.saturday.fit"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 3
-_RETRY_SAFE_ACTIVITY_POST = re.compile(r"^/v1/athletes/[^/]+/(activities/[^/]+/(calculate|prep)|export)$")
+_RETRY_SAFE_ACTIVITY_POST = re.compile(r"^/v1/athletes/[^/]+/(activities/[^/]+/(calculate|prep)|export|onboarding-link)$")
 
 
 def _retry_safe_on_server_error(method: str, path: str) -> bool:
     """A 5xx is retried only where a repeat cannot make a second record: every GET, PUT, PATCH
     and DELETE, and the POSTs that compute or read (calculations, product fit and compare, label
-    reading, inference, an activity's calculate and prep, export)."""
+    reading, inference, an activity's calculate and prep, export, an onboarding link)."""
     if method.upper() != "POST":
         return True
     bare = path.split("?")[0]
@@ -345,6 +347,14 @@ class _AthletesResource:
         """The athlete's Saturday app answers while they share them with you. Check ``sharing``:
         only ``on`` carries ``profile``; ``off`` and ``not_linked`` carry ``message``."""
         return self._client.request("GET", f"/v1/athletes/{_seg(athlete_id)}/fueling-profile")
+
+    def create_onboarding_link(self, athlete_id: str, locale: Optional[OnboardingLocale] = None) -> OnboardingLink:
+        """A fresh link to the hosted onboarding page for the athlete, valid for 90 days. Call it from
+        your refresh address, once your signed-in user owns ``athlete_id``, and redirect the athlete
+        to ``url``. Production refuses it with ``PermissionDeniedError``
+        (``hosted_onboarding_unavailable``) until the page opens there."""
+        body: Dict[str, Any] = {"locale": locale} if locale else {}
+        return self._client.request("POST", f"/v1/athletes/{_seg(athlete_id)}/onboarding-link", json=body)
 
     def batch_create(self, athletes: List[Dict[str, Any]]) -> BatchAthleteResponse:
         """Create up to 100 athletes in one call. An item whose ``external_id`` one of your athletes

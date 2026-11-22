@@ -36,6 +36,7 @@ MODELS = {
     "athlete_sharing": "Athlete",
     "fueling_profile_on": "FuelingProfile", "fueling_profile_off": "FuelingProfile", "fueling_profile_not_linked": "FuelingProfile",
     "webhook_profile_sharing_changed": "ProfileSharingChangedEvent", "webhook_fueling_profile_updated": "FuelingProfileUpdatedEvent",
+    "onboarding_link": "OnboardingLink", "partner_profile": "PartnerAccount",
 }
 
 

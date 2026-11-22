@@ -81,6 +81,19 @@ class OnboardingInvite(_OnboardingInviteRequired, total=False):
     url: str
 
 
+# A language the hosted onboarding page opens in.
+OnboardingLocale = Literal["en", "es", "fr", "pt", "de", "ja"]
+
+
+class OnboardingLink(TypedDict):
+    """POST /v1/athletes/{athlete_id}/onboarding-link: a fresh link to the hosted onboarding page."""
+
+    object: Literal["onboarding_link"]
+    athlete_id: str
+    url: str
+    expires_at: int  # Unix seconds; the link stops working then, 90 days after it was made.
+
+
 class _PrecisionRequired(TypedDict):
     profile_complete: bool
 
@@ -1200,7 +1213,7 @@ class PartnerRateLimits(TypedDict):
     trial_answers: Optional[int]
 
 
-class PartnerAccount(TypedDict):
+class _PartnerAccountRequired(TypedDict):
     id: str
     name: str
     contact_email: str
@@ -1209,6 +1222,13 @@ class PartnerAccount(TypedDict):
     plan: Literal["partner", "individual"]
     rate_limits: PartnerRateLimits
     created_at: int  # Unix seconds.
+
+
+class PartnerAccount(_PartnerAccountRequired, total=False):
+    return_url: str  # Where the hosted onboarding page sends athletes back to you; absent when none is set.
+    # Where an athlete who opens an expired onboarding link is sent, with athlete_id and locale in the
+    # query, so your server can get a fresh link and send them on. Absent when none is set.
+    refresh_url: str
 
 
 class DailyUsage(TypedDict):
