@@ -1,17 +1,32 @@
 # Changelog
 
-## Unreleased
+## 0.9.0
 
 Breaking changes:
 
 - `sweat_level`, `satiety_level` and `fitness_level` take 1, 3, 5, 7 or 9 and `saltiness` 1, 5 or 9, the levels the Saturday app stores, on `nutrition.calculate` and on an athlete's settings; the API refuses any other value with a `ValidationError` of code `invalid_value`. `carb_upper_limit_override` takes 50 to 150 g/hr in steps of 10 (code `out_of_range` otherwise). `SettingsFieldSchema` gains `values` and `step`.
+- `Saturday()` checks its arguments and raises `ValueError` naming the one at fault: an `api_key` that is not a string, is empty without a `bearer_token`, or holds a control character; a `bearer_token` with a control character; a `timeout` that is not a finite number above 0; a `max_retries` that is not an `int` of 0 or more (`True` and `False` included).
+- `activities.list` sends no `limit` unless you pass one, so a page holds the API's default of 50 activities. It sent 20.
 
 Added:
 
 - `athletes.create_onboarding_link(athlete_id, locale=None)` (`POST /v1/athletes/{athlete_id}/onboarding-link`) returns `OnboardingLink`: a fresh link to the hosted onboarding page (`url`), valid until `expires_at` (Unix seconds, 90 days on). Call it from your refresh address, where an athlete who opens an expired link is sent with `athlete_id` and `locale` in the query, and redirect them to `url`. Production refuses it with `PermissionDeniedError` (`hosted_onboarding_unavailable`) until the page opens there. A 5xx on it is retried.
 - `PartnerAccount["return_url"]` and `PartnerAccount["refresh_url"]`: the addresses on your account that the hosted onboarding page sends athletes to.
+- `organizations.list(limit=None, cursor=None)`: one page of organizations, newest first, `limit` 1 to 200 (default 50); pass `pagination["next_cursor"]` back as `cursor`.
+- `nutrition.batch_calculate(scenarios, estimate_only=True)` returns `total` and `estimated_ms`, the expected wall time of the real call, without calculating or counting against your limits.
 
-## 0.8.0 (unreleased)
+Fixed:
+
+- `request()` refuses an absolute URL with `ValueError` before sending. It sent the request, API key included, to that host.
+- Coach ids are encoded into the path in `coach.fueling_rollup`, `report`, `report_pdf`, `session_detail`, `delete_webhook`, `disable_webhook` and `enable_webhook`. An id holding `/` or `?` could reach another route. An id of `.` or `..` raises `ValueError`.
+- `Retry-After` as an HTTP date is read as the seconds until that date; it read as absent, so a short wait looked like a daily ceiling.
+- An error answer whose `error` is not an object (`{"error": null}`) raises the status's `SaturdayError` subclass with `code` `unknown`. It raised `AttributeError`.
+- The message taken from an error answer that is not JSON is cut to its first 200 characters.
+- The wait between 5xx retries stops growing at 30 seconds, the longest `Retry-After` the client waits.
+- The `athletes.create` and `batch_create` docstrings say what a create needs (nothing on a single create; one of `name`, `email` or `external_id` per batch item), and `coach.register_webhook`'s says that leaving `events` out subscribes to the two concern events and `["*"]` to every coach event.
+- `meta.errors()`: the catalog lists `missing_identifier` (a batch item with no identifier) and, for a key with nutrition open, `product_not_found`, and its `retryable` is `false` for the daily ceilings (fuel-backend #2424). `ErrorCatalogEntry["retryable"]` says what it means: whether to retry the same call automatically after `Retry-After`.
+
+## 0.8.0
 
 Breaking changes:
 
