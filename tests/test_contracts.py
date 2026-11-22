@@ -138,7 +138,7 @@ def test_pagination_and_query_defaults_are_preserved(name, options):
     def send(request):
         assert request.method == "GET"
         assert request.url.path == ("/v1/athletes" if athletes else "/v1/athletes/ath_1/activities")
-        assert dict(request.url.params) == {key: str(value) for key, value in (options or {"limit": 50 if athletes else 20}).items()}
+        assert dict(request.url.params) == {key: str(value) for key, value in (options or ({"limit": 50} if athletes else {})).items()}
         return httpx.Response(200, json=payload)
 
     client = Saturday(api_key="sk_test_fixture", max_retries=0)
