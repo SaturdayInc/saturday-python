@@ -21,6 +21,7 @@ Breaking changes:
 - Every timestamp a partner key receives is Unix seconds, matching the API: webhooks and deliveries, `WebhookEvent["created_at"]` and the two typed sharing events, `PartnerAccount["created_at"]`, `ApiKeyInfo` and `CreatedApiKey` times, `TrialMetadata["trial_ends_at"]`, the fueling profile's `updated_at` and `IntegrationStatusDetail["last_sync_at"]` were milliseconds. `AthleteDataExport["exported_at"]` is an `int` of Unix seconds (it was an RFC 3339 string), and every time in the export's records is Unix seconds. Coach types keep Unix milliseconds.
 - `activities.prep` sends only the lists you pass: `products=`, `legs=`, or an empty `products` list when you pass neither.
 - `ImportActivityRequest` takes `type` alone as required (`duration_min` is required for a single sport only), with `legs` and `meal_before_min`.
+- `satiety_level` and `fitness_level` take 1, 3, 5, 7 or 9, the levels the Saturday app stores, on `nutrition.calculate` and on an athlete's settings; the API refuses any other value with a `ValidationError` of code `invalid_value`. `carb_upper_limit_override` takes 50 to 150 g/hr in steps of 10 (code `out_of_range` otherwise). `SettingsFieldSchema` gains `values` and `step`.
 
 Added:
 

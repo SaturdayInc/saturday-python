@@ -242,7 +242,8 @@ class _NutritionResource:
         Required: ``activity_type``, and ``duration_min`` for a single sport. Send ``athlete_id``
         to use a stored athlete, and every session input (``intensity_level``,
         ``thermal_stress_level``, ``meal_before_min``: over 180 plans a fasted start, ``is_race``)
-        for exact numbers.
+        for exact numbers. ``satiety_level`` and ``fitness_level`` take 1, 3, 5, 7 or 9, and
+        ``carb_upper_limit_override`` 50 to 150 g/hr in steps of 10.
 
         A brick or triathlon is one call: ``activity_type="brick"`` (or ``"triathlon"``) with
         ``legs``, 2 to 10 dicts of ``activity_type``, ``duration_min``, ``intensity_level`` and
