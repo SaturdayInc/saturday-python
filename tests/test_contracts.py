@@ -229,3 +229,45 @@ def test_shared_profile_carries_every_answer_and_unshared_carries_none():
     for name in ("fueling_profile_off", "fueling_profile_not_linked"):
         assert "profile" not in FIXTURES[name] and "updated_at" not in FIXTURES[name]
         assert isinstance(FIXTURES[name]["message"], str)
+
+
+@pytest.mark.parametrize("call, method, path, body", [
+    (lambda c: c.nutrition.extract(image_base64="AA=="),
+     "POST", "/v1/nutrition/extract", {"image_base64": "AA=="}),
+    (lambda c: c.infer.activity_type(activity_name="Morning Ride", tags=["bike"]),
+     "POST", "/v1/infer/activity-type", {"activity_name": "Morning Ride", "tags": ["bike"]}),
+    (lambda c: c.infer.brick_types(activity_name="Brick session"),
+     "POST", "/v1/infer/brick-types", {"activity_name": "Brick session"}),
+    (lambda c: c.integrations.disconnect("intervals_icu", "ath_1"),
+     "POST", "/v1/integrations/intervals_icu/disconnect", {"athlete_id": "ath_1"}),
+    (lambda c: c.organizations.update_subscription("org_1", "sub_1", seats=10),
+     "PATCH", "/v1/organizations/org_1/subscriptions/sub_1", {"seats": 10}),
+    (lambda c: c.organizations.add_licenses("org_1", "sub_1", [{"athlete_id": "ath_1"}]),
+     "POST", "/v1/organizations/org_1/subscriptions/sub_1/licenses",
+     {"licenses": [{"athlete_id": "ath_1"}]}),
+    (lambda c: c.organizations.list_licenses("org_1", "sub_1"),
+     "GET", "/v1/organizations/org_1/subscriptions/sub_1/licenses", None),
+    (lambda c: c.organizations.remove_license("org_1", "sub_1", "ath_1"),
+     "DELETE", "/v1/organizations/org_1/subscriptions/sub_1/licenses/ath_1", None),
+    (lambda c: c.knowledge.list_topics(), "GET", "/v1/knowledge/topics", None),
+    (lambda c: c.knowledge.get_article("art_1"), "GET", "/v1/knowledge/articles/art_1", None),
+    (lambda c: c.activities.get("ath_1", "act_1"),
+     "GET", "/v1/athletes/ath_1/activities/act_1", None),
+    (lambda c: c.organizations.get("org_1"), "GET", "/v1/organizations/org_1", None),
+    (lambda c: c.organizations.update("org_1", description="Weekend riders"),
+     "PATCH", "/v1/organizations/org_1", {"description": "Weekend riders"}),
+    (lambda c: c.organizations.get_offer("org_1"), "GET", "/v1/organizations/org_1/offer", None),
+])
+def test_untested_methods_send_the_documented_request(call, method, path, body):
+    def send(request):
+        assert request.method == method
+        assert request.url.path == path
+        assert (json.loads(request.content) if request.content else None) == body
+        return httpx.Response(200, json={"ok": True})
+
+    client = Saturday(api_key="sk_test_fixture", max_retries=0)
+    client._client.close()
+    client._client = httpx.Client(
+        base_url=client._base_url, transport=httpx.MockTransport(send))
+    with client:
+        call(client)
