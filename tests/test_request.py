@@ -754,7 +754,7 @@ def test_5xx_json_errors_keep_their_code_and_retry_after(make_client, status):
     "preset", "coach-webhook-register", "put-rules", "patch-athlete",
     "patch-subscription", "delete-webhook", "delete-coach-webhook",
 ])
-def test_5xx_retry_decision_follows_the_call(make_client, monkeypatch, call, calls):
+def test_retry_decision_on_server_error_follows_the_call(make_client, monkeypatch, call, calls):
     monkeypatch.setattr("saturday.client.time.sleep", lambda _: None)
     sent = []
     responses = iter([
