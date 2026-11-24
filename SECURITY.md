@@ -1,5 +1,16 @@
 # Security Policy
 
+## Supported versions
+
+Security fixes go to the latest 0.9.x release only. Older releases get no security fixes.
+
+| Version | Supported |
+| --- | --- |
+| 0.9.x | Yes |
+| < 0.9 | No |
+
+Upgrade to the latest release to get security fixes.
+
 ## Reporting a vulnerability
 
 If you find a security vulnerability in the Saturday SDK, report it privately.
