@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from saturday import ConflictError, NotFoundError, PermissionDeniedError, RateLimitError, Saturday, SaturdayError, ValidationError
+from saturday import AuthenticationError, ConflictError, NotFoundError, PermissionDeniedError, RateLimitError, Saturday, SaturdayError, ValidationError
 
 
 @pytest.fixture
@@ -563,3 +563,576 @@ def test_computed_backoff_is_capped_at_max_retry_wait(make_client, monkeypatch):
         client.reference.activity_types()
     assert raised.value.status == 503
     assert sleeps == [1, 2, 4, 8, 16, 30, 30]
+
+
+def test_read_timeout_raises_the_sdk_timeout_once(make_client):
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        raise httpx.ReadTimeout("read timed out", request=request)
+
+    client = make_client(handler)
+    with pytest.raises(SaturdayError) as raised:
+        client.onboarding.questions()
+    assert (raised.value.status, raised.value.code) == (0, "timeout")
+    assert "30" in raised.value.message
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize("error_type", [httpx.ConnectTimeout, httpx.WriteTimeout, httpx.PoolTimeout])
+def test_timeout_variants_raise_the_sdk_timeout_once(make_client, error_type):
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        raise error_type("timed out", request=request)
+
+    client = make_client(handler)
+    with pytest.raises(SaturdayError) as raised:
+        client.onboarding.questions()
+    assert (raised.value.status, raised.value.code) == (0, "timeout")
+    assert len(sent) == 1
+
+
+def test_connection_failure_raises_connection_error_once(make_client):
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = make_client(handler)
+    with pytest.raises(SaturdayError) as raised:
+        client.onboarding.questions()
+    assert (raised.value.status, raised.value.code) == (0, "connection_error")
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize("error_type, message", [
+    (httpx.ReadError, "read error"),
+    (httpx.RemoteProtocolError, "protocol error"),
+])
+def test_other_transport_failures_raise_connection_error_once(make_client, error_type, message):
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        raise error_type(message, request=request)
+
+    client = make_client(handler)
+    with pytest.raises(SaturdayError) as raised:
+        client.onboarding.questions()
+    assert (raised.value.status, raised.value.code) == (0, "connection_error")
+    assert raised.value.message == message
+    assert len(sent) == 1
+
+
+def test_timeout_message_names_the_configured_timeout(make_client):
+    def handler(request):
+        raise httpx.ReadTimeout("read timed out", request=request)
+
+    client = make_client(handler, timeout=7)
+    with pytest.raises(SaturdayError) as raised:
+        client.onboarding.questions()
+    assert (raised.value.status, raised.value.code) == (0, "timeout")
+    assert raised.value.message == "Request timed out after 7s"
+
+
+@pytest.mark.parametrize("given, expected", [(None, 30.0), (7, 7), (2.5, 2.5)])
+def test_timeout_is_wired_to_the_httpx_client(given, expected):
+    options = {} if given is None else {"timeout": given}
+    client = Saturday(api_key="sk_test_fake", **options)
+    try:
+        timeout = client._client.timeout
+        assert timeout.connect == expected
+        assert timeout.read == expected
+        assert timeout.write == expected
+        assert timeout.pool == expected
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("status, klass, code", [
+    (401, AuthenticationError, "invalid_api_key"),
+    (422, ValidationError, "invalid_value"),
+])
+def test_status_maps_to_the_documented_error_class(make_client, status, klass, code):
+    client = make_client(lambda _: httpx.Response(status, json={"error": {
+        "type": "invalid_request", "code": code, "param": "duration_min",
+        "message": "Refused", "request_id": "req_9",
+    }}), max_retries=0)
+    with pytest.raises(klass) as raised:
+        client.nutrition.calculate(activity_type="run", duration_min=60)
+    assert (raised.value.status, raised.value.code, raised.value.request_id) == (status, code, "req_9")
+    assert raised.value.param == "duration_min"
+    assert raised.value.message == "Refused"
+    assert raised.value.error_type == "invalid_request"
+
+
+@pytest.mark.parametrize("body, code, message", [
+    ({"code": "plain_code", "message": "Plain", "param": "p1", "request_id": "req_u"}, "plain_code", "Plain"),
+    ({}, "unknown", "HTTP 404"),
+    ({"error": {}}, "unknown", "HTTP 404"),
+    ({"error": {"message": "Only message"}}, "unknown", "Only message"),
+    ({"error": {"code": "only_code"}}, "only_code", "HTTP 404"),
+])
+def test_error_detail_falls_back_when_fields_are_missing_or_unwrapped(make_client, body, code, message):
+    client = make_client(lambda _: httpx.Response(404, json=body), max_retries=0)
+    with pytest.raises(NotFoundError) as raised:
+        client.onboarding.questions()
+    assert (raised.value.status, raised.value.code, raised.value.message) == (404, code, message)
+
+
+def test_non_json_error_body_becomes_unknown_with_the_body_text(make_client):
+    client = make_client(
+        lambda _: httpx.Response(502, content=b"<html>Bad Gateway</html>"), max_retries=0)
+    with pytest.raises(SaturdayError) as raised:
+        client.onboarding.questions()
+    assert raised.value.status == 502
+    assert raised.value.code == "unknown"
+    assert "Bad Gateway" in raised.value.message
+
+
+def test_non_json_404_body_still_maps_to_not_found(make_client):
+    client = make_client(lambda _: httpx.Response(404, content=b"plain not found"), max_retries=0)
+    with pytest.raises(NotFoundError) as raised:
+        client.onboarding.questions()
+    assert (raised.value.status, raised.value.code) == (404, "unknown")
+    assert raised.value.message == "plain not found"
+
+
+@pytest.mark.xfail(reason="200 with a non-JSON or empty body raises JSONDecodeError, not SaturdayError", strict=True)
+@pytest.mark.parametrize("body", [b"not JSON", b""])
+def test_non_json_success_body_should_raise_saturday_error(make_client, body):
+    client = make_client(lambda _: httpx.Response(200, content=body), max_retries=0)
+    with pytest.raises(SaturdayError):
+        client.onboarding.questions()
+
+
+@pytest.mark.parametrize("status", [500, 502, 504])
+def test_5xx_json_errors_keep_their_code_and_retry_after(make_client, status):
+    client = make_client(lambda _: httpx.Response(status, json={"error": {
+        "type": "api_error", "code": "service_unavailable", "message": "Try again",
+        "request_id": "req_5xx",
+    }}, headers={"Retry-After": "9"}), max_retries=0)
+    with pytest.raises(SaturdayError) as raised:
+        client.onboarding.questions()
+    assert type(raised.value) is SaturdayError
+    assert (raised.value.status, raised.value.code, raised.value.request_id) == (status, "service_unavailable", "req_5xx")
+    assert raised.value.retry_after == 9
+
+
+@pytest.mark.parametrize("call, calls", [
+    (lambda c: c.nutrition.batch_calculate([{"activity_type": "run", "duration_min": 60}]), 2),
+    (lambda c: c.nutrition.product_fit(athlete_id="ath_1", activity_type="run", duration_min=60, product_id="p1"), 2),
+    (lambda c: c.nutrition.compare_products(athlete_id="ath_1", activity_type="run", duration_min=60, product_a={"product_id": "p1"}, product_b={"product_id": "p2"}), 2),
+    (lambda c: c.nutrition.extract(image_base64="AA=="), 2),
+    (lambda c: c.infer.activity_type(activity_name="Morning Ride"), 2),
+    (lambda c: c.infer.brick_types(activity_name="Brick session"), 2),
+    (lambda c: c.athletes.export("ath_1"), 2),
+    (lambda c: c.athletes.create_onboarding_link("ath_1"), 2),
+    (lambda c: c.webhooks.create("https://example.com/hook", ["athlete.created"]), 1),
+    (lambda c: c.partner.create_api_key("ci"), 1),
+    (lambda c: c.partner.rotate_api_key("key_1"), 1),
+    (lambda c: c.organizations.add_licenses("org_1", "sub_1", [{"athlete_id": "ath_1"}]), 1),
+    (lambda c: c.activities.create("ath_1", type="run", duration_min=60), 1),
+    (lambda c: c.activities.import_activities("ath_1", [{"type": "run", "duration_min": 60}]), 1),
+    (lambda c: c.integrations.sync("intervals_icu", athlete_id="ath_1", access_token="tok"), 1),
+    (lambda c: c.knowledge.search("sodium"), 1),
+    (lambda c: c.coach.apply_preset(scope="overall", preset="balanced"), 1),
+    (lambda c: c.coach.register_webhook("https://example.com/hook"), 1),
+    (lambda c: c.coach.set_notification_rules("overall", {"preset": "balanced"}), 2),
+    (lambda c: c.athletes.update("ath_1", name="Jo"), 2),
+    (lambda c: c.organizations.update_subscription("org_1", "sub_1", seats=10), 2),
+    (lambda c: c.webhooks.delete("wh_1"), 2),
+    (lambda c: c.coach.delete_webhook("cwh_1"), 2),
+], ids=[
+    "batch", "product-fit", "compare", "extract", "infer-activity", "infer-brick",
+    "export", "onboarding-link", "webhook-create", "key-create", "key-rotate",
+    "license-grant", "activity-create", "activity-import", "sync", "knowledge-search",
+    "preset", "coach-webhook-register", "put-rules", "patch-athlete",
+    "patch-subscription", "delete-webhook", "delete-coach-webhook",
+])
+def test_5xx_retry_decision_follows_the_call(make_client, monkeypatch, call, calls):
+    monkeypatch.setattr("saturday.client.time.sleep", lambda _: None)
+    sent = []
+    responses = iter([
+        httpx.Response(503, json={"error": {"message": "Try again"}}),
+        httpx.Response(200, json={"ok": True}),
+    ])
+
+    def handler(request):
+        sent.append(request)
+        return next(responses)
+
+    client = make_client(handler, max_retries=1)
+    try:
+        call(client)
+    except Exception as error:
+        assert error.status == 503
+    assert len(sent) == calls
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+def test_5xx_statuses_are_retried_on_a_read(make_client, monkeypatch, status):
+    monkeypatch.setattr("saturday.client.time.sleep", lambda _: None)
+    responses = iter([
+        httpx.Response(status, json={"error": {"message": "Try again"}}),
+        httpx.Response(200, json={"ok": True}),
+    ])
+    client = make_client(lambda _: next(responses), max_retries=1)
+    assert client.reference.activity_types() == {"ok": True}
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+def test_5xx_statuses_are_never_retried_on_a_create(make_client, monkeypatch, status):
+    monkeypatch.setattr("saturday.client.time.sleep", lambda _: None)
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        return httpx.Response(status, json={"error": {"message": "Try again"}})
+
+    client = make_client(handler, max_retries=3)
+    with pytest.raises(SaturdayError) as raised:
+        client.athletes.create(external_id="u-1")
+    assert raised.value.status == status
+    assert len(sent) == 1
+
+
+def test_retries_run_out_after_1_2_and_4_second_waits(make_client, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("saturday.client.time.sleep", sleeps.append)
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        return httpx.Response(503, json={"error": {"message": "Try again"}})
+
+    client = make_client(handler)
+    with pytest.raises(Exception) as raised:
+        client.reference.activity_types()
+    assert raised.value.status == 503
+    assert len(sent) == 4
+    assert sleeps == [1, 2, 4]
+
+
+def test_long_503_retry_after_is_raised_not_waited(make_client, monkeypatch):
+    monkeypatch.setattr("saturday.client.time.sleep", lambda _: pytest.fail("must not wait 900 s"))
+    client = make_client(lambda _: httpx.Response(
+        503, json={"error": {"message": "Try again"}}, headers={"Retry-After": "900"}))
+    with pytest.raises(Exception) as raised:
+        client.reference.activity_types()
+    assert (raised.value.status, raised.value.retry_after) == (503, 900)
+
+
+@pytest.mark.parametrize("wait, calls, sleeps", [
+    ("30", 2, [30]),
+    ("31", 1, []),
+], ids=["thirty-retries", "thirty-one-raises"])
+def test_503_retry_after_boundary(make_client, monkeypatch, wait, calls, sleeps):
+    recorded = []
+    monkeypatch.setattr("saturday.client.time.sleep", recorded.append)
+    sent = []
+    responses = iter([
+        httpx.Response(503, json={"error": {"message": "Try again"}}, headers={"Retry-After": wait}),
+        httpx.Response(200, json={"ok": True}),
+    ])
+
+    def handler(request):
+        sent.append(request)
+        return next(responses)
+
+    client = make_client(handler, max_retries=1)
+    try:
+        client.reference.activity_types()
+    except SaturdayError as error:
+        assert (error.status, error.retry_after) == (503, 31)
+    assert len(sent) == calls
+    assert recorded == sleeps
+
+
+def test_429_then_5xx_retries_both(make_client, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("saturday.client.time.sleep", sleeps.append)
+    responses = iter([
+        httpx.Response(429, json={"error": {"code": "rate_limit_exceeded", "message": "Slow"}}, headers={"Retry-After": "2"}),
+        httpx.Response(503, json={"error": {"message": "Try again"}}),
+        httpx.Response(200, json={"ok": True}),
+    ])
+    client = make_client(lambda _: next(responses), max_retries=3)
+    assert client.reference.activity_types() == {"ok": True}
+    assert sleeps == [2, 2]
+
+
+def test_5xx_then_429_retries_both(make_client, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("saturday.client.time.sleep", sleeps.append)
+    responses = iter([
+        httpx.Response(503, json={"error": {"message": "Try again"}}),
+        httpx.Response(429, json={"error": {"code": "rate_limit_exceeded", "message": "Slow"}}, headers={"Retry-After": "3"}),
+        httpx.Response(200, json={"ok": True}),
+    ])
+    client = make_client(lambda _: next(responses), max_retries=3)
+    assert client.reference.activity_types() == {"ok": True}
+    assert sleeps == [1, 3]
+
+
+def test_429_retries_run_out(make_client, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("saturday.client.time.sleep", sleeps.append)
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        return httpx.Response(429, json={"error": {"code": "rate_limit_exceeded", "message": "Slow"}}, headers={"Retry-After": "1"})
+
+    client = make_client(handler)
+    with pytest.raises(RateLimitError) as raised:
+        client.reference.activity_types()
+    assert raised.value.retry_after == 1
+    assert len(sent) == 4
+    assert sleeps == [1, 1, 1]
+
+
+def test_429_throttle_retries_even_a_create(make_client, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("saturday.client.time.sleep", sleeps.append)
+    responses = iter([
+        httpx.Response(429, json={"error": {"code": "rate_limit_exceeded", "message": "Slow"}}, headers={"Retry-After": "0"}),
+        httpx.Response(200, json={"ok": True}),
+    ])
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        return next(responses)
+
+    client = make_client(handler, max_retries=1)
+    assert client.athletes.create(external_id="u-1") == {"ok": True}
+    assert len(sent) == 2
+    assert sleeps == [0]
+
+
+def test_max_retries_zero_disables_5xx_retry_on_a_read(make_client, monkeypatch):
+    monkeypatch.setattr("saturday.client.time.sleep", lambda _: pytest.fail("max_retries=0 must not sleep"))
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        return httpx.Response(503, json={"error": {"message": "Try again"}})
+
+    client = make_client(handler, max_retries=0)
+    with pytest.raises(SaturdayError) as raised:
+        client.reference.activity_types()
+    assert raised.value.status == 503
+    assert len(sent) == 1
+
+
+def test_coach_calls_without_optional_arguments_send_no_query_and_empty_events(make_client):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    client = make_client(handler, max_retries=0)
+    client.coach.roster()
+    client.coach.roster_digest()
+    client.coach.get_notification_rules()
+    client.coach.get_report_settings()
+    client.coach.register_webhook("https://example.com/hook")
+    client.coach.report("ath_1")
+    client.coach.report("ath_1", window=7, refresh=True)
+
+    calls = [
+        (r.method, r.url.path, dict(r.url.params), json.loads(r.content) if r.content else None)
+        for r in seen
+    ]
+    assert calls == [
+        ("GET", "/v1/coach/roster", {}, None),
+        ("GET", "/v1/coach/roster/digest", {}, None),
+        ("GET", "/v1/coach/config/notification-rules", {}, None),
+        ("GET", "/v1/coach/config/report-settings", {}, None),
+        ("POST", "/v1/coach/webhooks", {}, {"url": "https://example.com/hook", "events": []}),
+        ("GET", "/v1/coach/athletes/ath_1/report", {}, None),
+        ("GET", "/v1/coach/athletes/ath_1/report", {"window": "7", "refresh": "true"}, None),
+    ]
+
+
+def test_two_page_walk_feeds_the_first_next_cursor_to_the_second_call(make_client):
+    sent = []
+    pages = iter([
+        {"athletes": [{"id": "ath_1"}], "pagination": {"total": 2, "has_more": True, "next_cursor": "1700000001"}, "request_id": "r1"},
+        {"athletes": [{"id": "ath_2"}], "pagination": {"total": 2, "has_more": False, "next_cursor": None}, "request_id": "r2"},
+    ])
+
+    def handler(request):
+        sent.append(dict(request.url.params))
+        return httpx.Response(200, json=next(pages))
+
+    client = make_client(handler, max_retries=0)
+    first = client.athletes.list(limit=1)
+    second = client.athletes.list(limit=1, cursor=first["pagination"]["next_cursor"])
+    assert first["pagination"]["has_more"] is True
+    assert second["pagination"]["has_more"] is False
+    assert sent == [{"limit": "1"}, {"limit": "1", "cursor": "1700000001"}]
+
+
+def test_ledger_walk_feeds_the_first_next_cursor_to_the_second_call(make_client):
+    sent = []
+    pages = iter([
+        {"entries": [{"id": "e1"}], "next_cursor": "1749480000000", "request_id": "r1"},
+        {"entries": [], "next_cursor": None, "request_id": "r2"},
+    ])
+
+    def handler(request):
+        sent.append(dict(request.url.params))
+        return httpx.Response(200, json=next(pages))
+
+    client = make_client(handler, max_retries=0)
+    first = client.coach.ledger(view="inflows", limit=1)
+    client.coach.ledger(view="inflows", limit=1, cursor=first["next_cursor"])
+    assert sent == [
+        {"view": "inflows", "limit": "1"},
+        {"view": "inflows", "limit": "1", "cursor": "1749480000000"},
+    ]
+
+
+@pytest.mark.parametrize("given, sent_value", [
+    (True, "true"),
+    (False, "false"),
+    (None, None),
+], ids=["true", "false", "omitted"])
+def test_athletes_list_profile_complete_filter(make_client, given, sent_value):
+    seen = []
+
+    def handler(request):
+        seen.append(dict(request.url.params))
+        return httpx.Response(200, json={"athletes": [], "pagination": {"total": 0, "has_more": False}, "request_id": "r"})
+
+    client = make_client(handler, max_retries=0)
+    client.athletes.list(profile_complete=given)
+    if sent_value is None:
+        assert seen == [{"limit": "50"}]
+    else:
+        assert seen == [{"limit": "50", "profile_complete": sent_value}]
+
+
+def test_bad_cursor_is_sent_verbatim_and_its_error_maps(make_client):
+    seen = []
+
+    def handler(request):
+        seen.append(dict(request.url.params))
+        return httpx.Response(400, json={"error": {
+            "type": "invalid_request", "code": "invalid_value", "param": "cursor",
+            "message": "Bad cursor", "request_id": "req_bad",
+        }})
+
+    client = make_client(handler, max_retries=0)
+    with pytest.raises(ValidationError) as raised:
+        client.athletes.list(cursor="not-a-cursor")
+    assert (raised.value.code, raised.value.param, raised.value.request_id) == ("invalid_value", "cursor", "req_bad")
+    assert seen == [{"limit": "50", "cursor": "not-a-cursor"}]
+
+
+def test_sdk_headers_are_sent_on_every_request(make_client):
+    from saturday.client import SDK_VERSION
+
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    client = make_client(handler, max_retries=0)
+    client.onboarding.questions()
+    assert seen[0].headers["User-Agent"] == f"saturday-python/{SDK_VERSION}"
+    assert seen[0].headers["X-SDK-Version"] == SDK_VERSION
+    assert seen[0].headers["Content-Type"] == "application/json"
+    assert seen[0].headers["Authorization"].startswith("Bearer ")
+
+
+def test_trailing_slash_on_base_url_hits_the_same_route():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    client = Saturday(api_key="sk_test_fake", base_url="https://api.saturday.fit///", max_retries=0)
+    headers = client._client.headers
+    client._client.close()
+    client._client = httpx.Client(base_url=client._base_url, headers=headers, transport=httpx.MockTransport(handler))
+    try:
+        assert client._base_url == "https://api.saturday.fit"
+        assert client.onboarding.questions() == {"ok": True}
+        assert str(seen[0].url) == "https://api.saturday.fit/v1/onboarding/questions"
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("call, raw_path", [
+    (lambda c: c.athletes.get("a/b c"), "/v1/athletes/a%2Fb%20c"),
+    (lambda c: c.activities.get("ath 1", "act/1"), "/v1/athletes/ath%201/activities/act%2F1"),
+    (lambda c: c.webhooks.get("wh/1"), "/v1/webhooks/wh%2F1"),
+    (lambda c: c.partner.revoke_api_key("key/1"), "/v1/partner/api-keys/key%2F1"),
+    (lambda c: c.organizations.get("org/1"), "/v1/organizations/org%2F1"),
+    (lambda c: c.knowledge.get_article("art/1?x=2"), "/v1/knowledge/articles/art%2F1%3Fx%3D2"),
+], ids=["athlete", "activity", "webhook", "api-key", "organization", "article"])
+def test_path_segments_are_encoded_across_resources(make_client, call, raw_path):
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.raw_path.decode())
+        return httpx.Response(200, json={"ok": True})
+
+    client = make_client(handler, max_retries=0)
+    call(client)
+    assert seen == [raw_path]
+
+
+def test_direct_request_sends_params_json_and_raw(make_client):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        if request.url.path == "/v1/empty":
+            return httpx.Response(204)
+        if request.url.path == "/v1/raw":
+            return httpx.Response(200, content=b"rawbytes")
+        return httpx.Response(200, json={"ok": True})
+
+    client = make_client(handler, max_retries=0)
+    assert client.request("GET", "/v1/health", params={"verbose": "1"}) == {"ok": True}
+    assert client.request("POST", "/v1/health", json={"x": 1}) == {"ok": True}
+    assert client.request("GET", "/v1/raw", raw=True) == b"rawbytes"
+    assert client.request("GET", "/v1/empty", raw=True) is None
+    assert client.request("get", "/v1/health") == {"ok": True}
+    assert seen[0].method == "GET" and dict(seen[0].url.params) == {"verbose": "1"}
+    assert seen[1].method == "POST" and json.loads(seen[1].content) == {"x": 1}
+    assert seen[4].method == "GET"
+
+
+def test_close_is_idempotent_and_later_calls_fail(make_client):
+    client = make_client(lambda _: httpx.Response(200, json={"ok": True}), max_retries=0)
+    assert client.onboarding.questions() == {"ok": True}
+    client.close()
+    client.close()
+    with pytest.raises(RuntimeError, match="client has been closed"):
+        client.onboarding.questions()
+
+
+def test_context_manager_closes_on_exit():
+    client = Saturday(api_key="sk_test_fake", max_retries=0)
+    client._client.close()
+    client._client = httpx.Client(
+        base_url=client._base_url,
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"ok": True})),
+    )
+    with client as entered:
+        assert entered is client
+        assert entered.onboarding.questions() == {"ok": True}
+    with pytest.raises(RuntimeError, match="client has been closed"):
+        client.onboarding.questions()

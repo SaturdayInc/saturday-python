@@ -271,3 +271,125 @@ def test_untested_methods_send_the_documented_request(call, method, path, body):
         base_url=client._base_url, transport=httpx.MockTransport(send))
     with client:
         call(client)
+
+
+@pytest.mark.parametrize("call, method, path, params, body", [
+    (lambda c: c.nutrition.compare_products(athlete_id="ath_1", activity_type="run", duration_min=60, product_a={"product_id": "p1"}, product_b={"product_query": "gel"}),
+     "POST", "/v1/nutrition/products/compare", {},
+     {"athlete_id": "ath_1", "activity_type": "run", "duration_min": 60, "product_a": {"product_id": "p1"}, "product_b": {"product_query": "gel"}}),
+    (lambda c: c.athletes.get("ath_1"), "GET", "/v1/athletes/ath_1", {}, None),
+    (lambda c: c.athletes.update("ath_1", name="Jo", weight_kg=62),
+     "PATCH", "/v1/athletes/ath_1", {}, {"name": "Jo", "weight_kg": 62}),
+    (lambda c: c.athletes.export("ath_1"), "POST", "/v1/athletes/ath_1/export", {}, None),
+    (lambda c: c.athletes.list_consent("ath_1"), "GET", "/v1/athletes/ath_1/consent", {}, None),
+    (lambda c: c.athletes.record_consent("ath_1", consent_type="marketing", granted=True),
+     "POST", "/v1/athletes/ath_1/consent", {}, {"consent_type": "marketing", "granted": True}),
+    (lambda c: c.athletes.revoke_consent("ath_1", "con_1"),
+     "DELETE", "/v1/athletes/ath_1/consent/con_1", {}, None),
+    (lambda c: c.activities.create("ath_1", type="run", duration_min=60),
+     "POST", "/v1/athletes/ath_1/activities", {}, {"type": "run", "duration_min": 60}),
+    (lambda c: c.activities.update("ath_1", "act_1", duration_min=90),
+     "PATCH", "/v1/athletes/ath_1/activities/act_1", {}, {"duration_min": 90}),
+    (lambda c: c.activities.delete("ath_1", "act_1"),
+     "DELETE", "/v1/athletes/ath_1/activities/act_1", {}, None),
+    (lambda c: c.reference.settings_schema(), "GET", "/v1/settings/schema", {}, None),
+    (lambda c: c.reference.activity_types(activity_type="brick"),
+     "GET", "/v1/activity-types", {"activity_type": "brick"}, None),
+    (lambda c: c.partner.get(), "GET", "/v1/partner", {}, None),
+    (lambda c: c.partner.usage(from_date="2026-11-01", to_date="2026-11-07"),
+     "GET", "/v1/partner/usage", {"from": "2026-11-01", "to": "2026-11-07"}, None),
+    (lambda c: c.partner.usage(), "GET", "/v1/partner/usage", {}, None),
+    (lambda c: c.partner.usage_daily(from_date="2026-11-01", to_date="2026-11-07"),
+     "GET", "/v1/partner/usage/daily", {"from": "2026-11-01", "to": "2026-11-07"}, None),
+    (lambda c: c.partner.list_api_keys(), "GET", "/v1/partner/api-keys", {}, None),
+    (lambda c: c.partner.create_api_key("ci", scopes=["read"]),
+     "POST", "/v1/partner/api-keys", {}, {"name": "ci", "scopes": ["read"]}),
+    (lambda c: c.partner.create_api_key("ci"),
+     "POST", "/v1/partner/api-keys", {}, {"name": "ci"}),
+    (lambda c: c.partner.revoke_api_key("key_1"), "DELETE", "/v1/partner/api-keys/key_1", {}, None),
+    (lambda c: c.partner.rotate_api_key("key_1"), "POST", "/v1/partner/api-keys/key_1/rotate", {}, None),
+    (lambda c: c.webhooks.list(), "GET", "/v1/webhooks", {}, None),
+    (lambda c: c.webhooks.get("wh_1"), "GET", "/v1/webhooks/wh_1", {}, None),
+], ids=[
+    "compare", "athlete-get", "athlete-update", "export", "consent-list", "consent-record",
+    "consent-revoke", "activity-create", "activity-update", "activity-delete",
+    "settings-schema", "activity-types-filter", "partner-get", "usage-dates", "usage-default",
+    "usage-daily", "key-list", "key-create-scopes", "key-create-plain", "key-revoke",
+    "key-rotate", "webhook-list", "webhook-get",
+])
+def test_live_only_reads_send_the_documented_request(call, method, path, params, body):
+    def send(request):
+        assert request.method == method
+        assert request.url.path == path
+        assert dict(request.url.params) == params
+        assert (json.loads(request.content) if request.content else None) == body
+        return httpx.Response(200, json={"ok": True})
+
+    client = Saturday(api_key="sk_test_fixture", max_retries=0)
+    client._client.close()
+    client._client = httpx.Client(
+        base_url=client._base_url, transport=httpx.MockTransport(send))
+    with client:
+        call(client)
+
+
+@pytest.mark.parametrize("call, method, path, params, body", [
+    (lambda c: c.webhooks.update("wh_1", url="https://example.com/h", events=["athlete.created"], active=True),
+     "PATCH", "/v1/webhooks/wh_1", {}, {"url": "https://example.com/h", "events": ["athlete.created"], "active": True}),
+    (lambda c: c.webhooks.update("wh_1", active=False),
+     "PATCH", "/v1/webhooks/wh_1", {}, {"active": False}),
+    (lambda c: c.webhooks.delete("wh_1"), "DELETE", "/v1/webhooks/wh_1", {}, None),
+    (lambda c: c.webhooks.test("wh_1"), "POST", "/v1/webhooks/wh_1/test", {}, None),
+    (lambda c: c.organizations.create("Riders", description="Weekend", sport="cycling"),
+     "POST", "/v1/organizations", {}, {"display_name": "Riders", "description": "Weekend", "sport": "cycling"}),
+    (lambda c: c.organizations.create("Riders"),
+     "POST", "/v1/organizations", {}, {"display_name": "Riders"}),
+    (lambda c: c.organizations.add_member("org_1", "a@example.com", role="admin", athlete_id="ath_1"),
+     "POST", "/v1/organizations/org_1/members", {}, {"email": "a@example.com", "role": "admin", "athlete_id": "ath_1"}),
+    (lambda c: c.organizations.add_member("org_1", "a@example.com"),
+     "POST", "/v1/organizations/org_1/members", {}, {"email": "a@example.com", "role": "member"}),
+    (lambda c: c.organizations.list_members("org_1"), "GET", "/v1/organizations/org_1/members", {}, None),
+    (lambda c: c.organizations.remove_member("org_1", "mem_1"),
+     "DELETE", "/v1/organizations/org_1/members/mem_1", {}, None),
+    (lambda c: c.organizations.set_offer("org_1", discount_percent=20, applies_to_plan="12_month"),
+     "PUT", "/v1/organizations/org_1/offer", {}, {"discount_percent": 20, "applies_to_plan": "12_month"}),
+    (lambda c: c.organizations.delete_offer("org_1"), "DELETE", "/v1/organizations/org_1/offer", {}, None),
+    (lambda c: c.organizations.create_subscription("org_1", type="team", seats=10, start_date=1700000000, end_date=1730000000),
+     "POST", "/v1/organizations/org_1/subscriptions", {},
+     {"type": "team", "seats": 10, "start_date": 1700000000, "end_date": 1730000000}),
+    (lambda c: c.organizations.list_subscriptions("org_1"), "GET", "/v1/organizations/org_1/subscriptions", {}, None),
+    (lambda c: c.integrations.status("intervals_icu", "ath_1"),
+     "GET", "/v1/integrations/intervals_icu/status", {"athlete_id": "ath_1"}, None),
+    (lambda c: c.testing.simulate_subscription("ath_1"),
+     "POST", "/v1/test/athletes/ath_1/simulate-subscription", {}, {"active": True}),
+    (lambda c: c.testing.simulate_subscription("ath_1", active=False),
+     "POST", "/v1/test/athletes/ath_1/simulate-subscription", {}, {"active": False}),
+    (lambda c: c.meta.discovery(), "GET", "/v1/", {}, None),
+    (lambda c: c.meta.errors(), "GET", "/v1/errors", {}, None),
+    (lambda c: c.meta.health(), "GET", "/v1/health", {}, None),
+    (lambda c: c.knowledge.search("sodium", limit=5, category="hydration"),
+     "POST", "/v1/knowledge/search", {}, {"query": "sodium", "limit": 5, "category": "hydration"}),
+    (lambda c: c.knowledge.search("sodium"),
+     "POST", "/v1/knowledge/search", {}, {"query": "sodium"}),
+], ids=[
+    "webhook-update-full", "webhook-update-partial", "webhook-delete", "webhook-test",
+    "org-create-full", "org-create-minimal", "org-add-member-full", "org-add-member-default",
+    "org-list-members", "org-remove-member", "org-set-offer", "org-delete-offer",
+    "org-create-subscription", "org-list-subscriptions", "integration-status",
+    "simulate-on", "simulate-off", "discovery", "error-catalog", "health",
+    "knowledge-full", "knowledge-plain",
+])
+def test_live_only_writes_send_the_documented_request(call, method, path, params, body):
+    def send(request):
+        assert request.method == method
+        assert request.url.path == path
+        assert dict(request.url.params) == params
+        assert (json.loads(request.content) if request.content else None) == body
+        return httpx.Response(200, json={"ok": True})
+
+    client = Saturday(api_key="sk_test_fixture", max_retries=0)
+    client._client.close()
+    client._client = httpx.Client(
+        base_url=client._base_url, transport=httpx.MockTransport(send))
+    with client:
+        call(client)
