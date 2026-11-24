@@ -153,8 +153,8 @@ def test_main_flows(live):
     assert taken.value.athlete_id == complete["id"]
     assert [a["id"] for a in client.athletes.list(external_id=f"{run}-a")["athletes"]] == [complete["id"]]
     assert client.athletes.update(complete["id"], name="Live Suite")["name"] == "Live Suite"
-    settings = client.athletes.update_settings(complete["id"], **{**COMPLETE["settings"], "sweat_level": 6})
-    assert settings["sweat_level"] == 6
+    settings = client.athletes.update_settings(complete["id"], **{**COMPLETE["settings"], "sweat_level": 7})
+    assert settings["sweat_level"] == 7
     capture("fueling_profile", "FuelingProfile", client.athletes.get_fueling_profile(complete["id"]))
     batch = capture("athletes_batch", "BatchAthleteResponse", client.athletes.batch_create(
         [{"external_id": f"{run}-c"}, {"sex": "female"}, {"external_id": f"{run}-a"}]))
