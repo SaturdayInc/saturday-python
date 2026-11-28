@@ -257,7 +257,7 @@ def test_package_docstring_example(monkeypatch, capsys):
         return _json(request, CONTRACTS["nutrition_exact"])
 
     monkeypatch.setenv("SATURDAY_API_KEY", "sk_test_fake")
-    _run(monkeypatch, _docstring_code(saturday), route, "saturday/__init__.py example")
+    _run(monkeypatch, _docstring_code(saturday), route, "package docstring example")
     plan = CONTRACTS["nutrition_exact"]
     assert capsys.readouterr().out.splitlines() == [str(plan.get("carb_g_per_hr", plan.get("carb_range_g_per_hr")))]
 
@@ -276,7 +276,7 @@ def test_saturday_class_docstring_example(monkeypatch):
     # The class docstring snippet is a fragment: it uses Saturday without
     # importing it, so seed the name as the surrounding docs do.
     namespace, _ = _run(monkeypatch, _docstring_code(saturday.Saturday), route,
-                        "Saturday docstring example", namespace={"Saturday": saturday.Saturday})
+                        "client docstring example", namespace={"Saturday": saturday.Saturday})
     try:
         assert namespace["athlete"] == LIVE["athlete"]
         assert namespace["plan"] == LIVE["calculate_exact"]
@@ -297,7 +297,7 @@ def test_coach_resource_docstring_example(monkeypatch):
         return _json(request, {})
 
     namespace, seen = _run(monkeypatch, _docstring_code(_CoachResource), route,
-                           "coach docstring example", namespace={"Saturday": saturday.Saturday})
+                           "coach resource docstring example", namespace={"Saturday": saturday.Saturday})
     try:
         assert namespace["digest"] == COACH_DIGEST
         assert json.loads(seen[1].content) == {"scope": "overall", "scope_id": None, "preset": "balanced"}

@@ -130,6 +130,17 @@ def test_timeout_must_be_a_number(timeout):
         Saturday(api_key="sk_test_fake", timeout=timeout)
 
 
+def test_retry_after_date_parser_returning_none_is_absent(monkeypatch):
+    """parsedate_to_datetime raises on unparseable dates since Python 3.10,
+    so from_response's None guard is unreachable with the stdlib parser on
+    supported interpreters. Patch the parser to return None and check the
+    guard still reports no wait rather than crashing."""
+    monkeypatch.setattr("saturday.errors.parsedate_to_datetime", lambda _: None)
+    error = SaturdayError.from_response(
+        429, {"error": {"code": "rate_limit_exceeded", "message": "Slow"}}, "whenever")
+    assert error.retry_after is None
+
+
 def test_retry_after_http_date_without_timezone_is_read_as_utc():
     """An HTTP-date Retry-After with the -0000 zone parses to a naive
     datetime; the parser reads it as UTC rather than dropping it."""
