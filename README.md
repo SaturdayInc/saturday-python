@@ -198,7 +198,7 @@ with Saturday(api_key="sk_test_...") as client:
 | Resource | Methods |
 |----------|---------|
 | `client.nutrition` | `calculate`, `batch_calculate`, `product_fit`, `compare_products`, `extract` |
-| `client.athletes` | `create`, `get`, `list`, `update`, `delete`, `get_settings`, `update_settings`, `get_fueling_profile`, `batch_create`, `export`, `erase`, `list_consent`, `record_consent`, `revoke_consent` |
+| `client.athletes` | `create`, `get`, `list`, `update`, `delete`, `get_settings`, `update_settings`, `get_fueling_profile`, `create_onboarding_link`, `batch_create`, `export`, `erase`, `list_consent`, `record_consent`, `revoke_consent` |
 | `client.activities` | `create`, `get`, `list`, `update`, `delete`, `calculate_prescription`, `get_prescription`, `prep`, `import_activities`, `submit_feedback` |
 | `client.onboarding` | `questions` |
 | `client.reference` | `activity_types`, `settings_schema` |

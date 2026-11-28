@@ -102,15 +102,15 @@ class SaturdayError(Exception):
                 if seconds is not None and float(seconds).is_integer():
                     seconds = int(seconds)
         if status in (400, 422):
-            return ValidationError(**kwargs)
+            return ValidationError(**kwargs, retry_after=seconds)
         if status == 401:
-            return AuthenticationError(**kwargs)
+            return AuthenticationError(**kwargs, retry_after=seconds)
         if status == 403:
-            return PermissionDeniedError(**kwargs)
+            return PermissionDeniedError(**kwargs, retry_after=seconds)
         if status == 404:
-            return NotFoundError(**kwargs)
+            return NotFoundError(**kwargs, retry_after=seconds)
         if status == 409:
-            return ConflictError(**kwargs)
+            return ConflictError(**kwargs, retry_after=seconds)
         if status == 429:
             return RateLimitError(**kwargs, retry_after=seconds)
         return cls(**kwargs, retry_after=seconds)

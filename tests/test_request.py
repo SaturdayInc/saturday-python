@@ -702,7 +702,6 @@ def test_non_json_404_body_still_maps_to_not_found(make_client):
     assert raised.value.message == "plain not found"
 
 
-@pytest.mark.xfail(reason="200 with a non-JSON or empty body raises JSONDecodeError, not SaturdayError", strict=True)
 @pytest.mark.parametrize("body", [b"not JSON", b""])
 def test_non_json_success_body_should_raise_saturday_error(make_client, body):
     client = make_client(lambda _: httpx.Response(200, content=body), max_retries=0)
