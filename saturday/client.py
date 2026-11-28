@@ -98,7 +98,7 @@ def _retry_safe_on_server_error(method: str, path: str) -> bool:
 def _seg(value: str) -> str:
     """Encode one path segment."""
     text = str(value)
-    if text in (".", ".."):
+    if text in ("", ".", ".."):
         raise ValueError(f"Invalid path segment: {text!r}")
     return quote(text, safe="")
 
@@ -225,7 +225,14 @@ class Saturday:
             if response.is_success:
                 if response.status_code == 204:
                     return None
-                return response.content if raw else response.json()
+                if raw:
+                    return response.content
+                try:
+                    return response.json()
+                except ValueError:
+                    raise SaturdayError(
+                        message=f"Response was not valid JSON (HTTP {response.status_code})",
+                        status=response.status_code, code="invalid_response")
 
             try:
                 error_body = response.json()
@@ -670,7 +677,7 @@ class _OrganizationsResource:
 
     def create_subscription(self, org_id: str, *, type: str, seats: int, start_date: int, end_date: int) -> OrganizationSubscription:
         """Create a seat subscription (dates in Unix seconds). Seat subscriptions are set up
-        with Saturday: without an allowance on your account this raises ``PermissionError``
+        with Saturday: without an allowance on your account this raises ``PermissionDeniedError``
         (``organization_subscription_restricted``)."""
         return self._client.request(
             "POST", f"/v1/organizations/{_seg(org_id)}/subscriptions",
@@ -778,7 +785,7 @@ class _MetaResource:
 
 
 class _KnowledgeResource:
-    """Early access: a key without access gets ``PermissionError`` (``feature_alpha``)."""
+    """Early access: a key without access gets ``PermissionDeniedError`` (``feature_alpha``)."""
 
     def __init__(self, client: Saturday):
         self._client = client
